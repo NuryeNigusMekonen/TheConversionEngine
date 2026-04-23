@@ -1,0 +1,58 @@
+[
+  {
+    "run_id": "clean-synthetic-production-run-2026-04-23",
+    "condition": "production_stack_synthetic_preview",
+    "benchmark": "tenacious_pipeline_local",
+    "interaction_count": 20,
+    "latency_p50_ms": 20.59,
+    "latency_p95_ms": 24.94,
+    "outbound_enabled_for_run": false,
+    "trace_file": "agent/data/traces.jsonl",
+    "summary_file": "agent/data/submission_run_summary.json",
+    "notes": "Clean run with provider adapters forced to preview mode for synthetic submission artifacts."
+  },
+  {
+    "run_id": "tau2-retail-smoke-flash-lite-2026-04-23",
+    "condition": "tau2_retail_smoke",
+    "benchmark": "tau2 retail base split",
+    "task_count": 1,
+    "trials": 1,
+    "pass_at_1_mean": 0.0,
+    "reward": 0.0,
+    "prompt_tokens": 87884,
+    "completion_tokens": 1738,
+    "total_tokens": 89622,
+    "llm_calls": 34,
+    "recorded_cost_usd": 0.003556,
+    "result_file": "eval/tau2-bench/data/simulations/conversion_engine_smoke_flash_lite/results.json",
+    "notes": "Gemini 2.0 Flash Lite completed the smoke run. LiteLLM logs model-pricing warnings but still records usage and cost."
+  },
+  {
+    "run_id": "tau2-retail-smoke-gemini-flash-2026-04-23",
+    "condition": "tau2_retail_smoke_infra_error",
+    "benchmark": "tau2 retail base split",
+    "task_count": 1,
+    "trials": 1,
+    "evaluated_tasks": 0,
+    "infra_errors": 1,
+    "result_file": "eval/tau2-bench/data/simulations/conversion_engine_smoke/results.json",
+    "notes": "Configured OpenRouter model google/gemini-2.0-flash-001 reached provider but failed with upstream 429 rate limits and a final 504."
+  },
+  {
+    "run_id": "tau2-retail-submission-flash-lite-2026-04-23",
+    "condition": "tau2_retail_submission",
+    "benchmark": "tau2 retail base split",
+    "task_count": 5,
+    "trials": 1,
+    "evaluated_tasks": 5,
+    "infra_errors": 0,
+    "pass_at_1_mean": 0.0,
+    "reward": 0.0,
+    "prompt_tokens": 226905,
+    "completion_tokens": 3921,
+    "total_tokens": 230826,
+    "recorded_cost_usd": 0.018194175000000003,
+    "result_file": "eval/tau2-bench/data/simulations/20260423_205646_retail_llm_agent_gemini-2.0-flash-lite-001_user_simulator_gemini-2.0-flash-lite-001/results.json",
+    "notes": "Final tau2 retail submission run after evaluator JSON parsing hardening. Completed all 5 tasks without infra errors on OpenRouter Gemini 2.0 Flash Lite."
+  }
+]
