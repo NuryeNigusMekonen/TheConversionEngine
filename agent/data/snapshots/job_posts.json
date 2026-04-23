@@ -1,0 +1,50 @@
+[
+  {
+    "company_name": "Northstar Labs",
+    "domain": "northstarlabs.ai",
+    "open_engineering_roles": 11,
+    "ai_roles": 3,
+    "growth_delta_60d_pct": 140,
+    "examples": ["ML Engineer", "Platform Engineer", "Applied AI PM"]
+  },
+  {
+    "company_name": "OrbitStack Cloud",
+    "domain": "orbitstack.dev",
+    "open_engineering_roles": 8,
+    "ai_roles": 1,
+    "growth_delta_60d_pct": 40,
+    "examples": ["Infrastructure Engineer", "Developer Experience Engineer"]
+  },
+  {
+    "company_name": "Arc Treasury",
+    "domain": "arctreasury.com",
+    "open_engineering_roles": 5,
+    "ai_roles": 0,
+    "growth_delta_60d_pct": -20,
+    "examples": ["Staff Backend Engineer", "Security Engineer"]
+  },
+  {
+    "company_name": "ClearMint",
+    "domain": "clearmint.io",
+    "open_engineering_roles": 14,
+    "ai_roles": 4,
+    "growth_delta_60d_pct": 175,
+    "examples": ["LLM Engineer", "Data Platform Engineer", "Solutions Architect"]
+  },
+  {
+    "company_name": "PatientLake",
+    "domain": "patientlake.health",
+    "open_engineering_roles": 6,
+    "ai_roles": 1,
+    "growth_delta_60d_pct": 25,
+    "examples": ["Data Engineer", "Analytics Engineer"]
+  },
+  {
+    "company_name": "RetailGraph",
+    "domain": "retailgraph.com",
+    "open_engineering_roles": 9,
+    "ai_roles": 2,
+    "growth_delta_60d_pct": 85,
+    "examples": ["Data Platform Engineer", "Applied Scientist"]
+  }
+]

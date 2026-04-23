@@ -1,0 +1,23 @@
+[
+  {
+    "company_name": "Northstar Labs",
+    "domain": "northstarlabs.ai",
+    "role": "VP Engineering",
+    "person": "Jordan Rivera",
+    "days_ago": 41
+  },
+  {
+    "company_name": "ClearMint",
+    "domain": "clearmint.io",
+    "role": "CTO",
+    "person": "Amara Cole",
+    "days_ago": 73
+  },
+  {
+    "company_name": "PatientLake",
+    "domain": "patientlake.health",
+    "role": "VP Engineering",
+    "person": "Nina Baum",
+    "days_ago": 118
+  }
+]

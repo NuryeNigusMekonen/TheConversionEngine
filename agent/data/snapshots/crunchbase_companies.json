@@ -1,0 +1,56 @@
+[
+  {
+    "company_name": "Northstar Labs",
+    "domain": "northstarlabs.ai",
+    "sector": "devtools",
+    "employee_count": 84,
+    "funding_musd": 18,
+    "funding_months_ago": 3,
+    "location": "New York, USA"
+  },
+  {
+    "company_name": "OrbitStack Cloud",
+    "domain": "orbitstack.dev",
+    "sector": "devtools",
+    "employee_count": 230,
+    "funding_musd": 24,
+    "funding_months_ago": 5,
+    "location": "London, UK"
+  },
+  {
+    "company_name": "Arc Treasury",
+    "domain": "arctreasury.com",
+    "sector": "fintech",
+    "employee_count": 310,
+    "funding_musd": 27,
+    "funding_months_ago": 4,
+    "location": "San Francisco, USA"
+  },
+  {
+    "company_name": "ClearMint",
+    "domain": "clearmint.io",
+    "sector": "fintech",
+    "employee_count": 71,
+    "funding_musd": 11,
+    "funding_months_ago": 2,
+    "location": "Toronto, Canada"
+  },
+  {
+    "company_name": "PatientLake",
+    "domain": "patientlake.health",
+    "sector": "healthtech",
+    "employee_count": 142,
+    "funding_musd": 16,
+    "funding_months_ago": 6,
+    "location": "Berlin, Germany"
+  },
+  {
+    "company_name": "RetailGraph",
+    "domain": "retailgraph.com",
+    "sector": "commerce",
+    "employee_count": 265,
+    "funding_musd": 21,
+    "funding_months_ago": 5,
+    "location": "Amsterdam, Netherlands"
+  }
+]

@@ -1,0 +1,16 @@
+[
+  {
+    "company_name": "OrbitStack Cloud",
+    "domain": "orbitstack.dev",
+    "days_ago": 52,
+    "percent": 12,
+    "affected_employees": 28
+  },
+  {
+    "company_name": "Arc Treasury",
+    "domain": "arctreasury.com",
+    "days_ago": 88,
+    "percent": 9,
+    "affected_employees": 31
+  }
+]
