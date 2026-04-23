@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: conversion-engine
+    runtime: python
+    plan: free
+    autoDeploy: true
+    buildCommand: "pip install uv && uv sync --frozen"
+    startCommand: "uv run uvicorn agent.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+      - key: APP_BASE_URL
+        sync: false
+      - key: EMAIL_PROVIDER
+        value: mock
+      - key: SMS_PROVIDER
+        value: mock
+      - key: CRUNCHBASE_SNAPSHOT_PATH
+        value: agent/data/snapshots/crunchbase_companies.json
+      - key: JOB_POSTS_SNAPSHOT_PATH
+        value: agent/data/snapshots/job_posts.json
+      - key: LAYOFFS_SNAPSHOT_PATH
+        value: agent/data/snapshots/layoffs.json
+      - key: LEADERSHIP_SNAPSHOT_PATH
+        value: agent/data/snapshots/leadership.json
