@@ -1,0 +1,80 @@
+from dataclasses import dataclass
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+@dataclass(frozen=True)
+class Settings:
+    project_root: Path = Path(__file__).resolve().parent.parent
+    data_dir: Path = project_root / "agent" / "data"
+    database_path: Path = data_dir / "conversion_engine.db"
+    trace_path: Path = data_dir / "traces.jsonl"
+    outbox_dir: Path = data_dir / "outbox"
+    snapshots_dir: Path = data_dir / "snapshots"
+    webhook_dir: Path = data_dir / "webhooks"
+    seed_dir: Path = project_root / "docs" / "tenacious_sales_data" / "tenacious_sales_data" / "seed"
+    bench_summary_path: Path = Path(
+        os.getenv(
+            "BENCH_SUMMARY_PATH",
+            project_root
+            / "docs"
+            / "tenacious_sales_data"
+            / "tenacious_sales_data"
+            / "seed"
+            / "bench_summary.json",
+        )
+    )
+    outbound_enabled: bool = os.getenv("OUTBOUND_ENABLED", "").lower() in {"1", "true", "yes"}
+    app_base_url: str = os.getenv("APP_BASE_URL", "http://127.0.0.1:8000")
+    resend_webhook_secret: str = os.getenv("RESEND_WEBHOOK_SECRET", "")
+    calcom_webhook_secret: str = os.getenv("CALCOM_WEBHOOK_SECRET", "")
+    hubspot_webhook_secret: str = os.getenv("HUBSPOT_WEBHOOK_SECRET", "")
+    crunchbase_snapshot_path: Path = Path(
+        os.getenv("CRUNCHBASE_SNAPSHOT_PATH", data_dir / "snapshots" / "crunchbase_companies.json")
+    )
+    job_posts_snapshot_path: Path = Path(
+        os.getenv("JOB_POSTS_SNAPSHOT_PATH", data_dir / "snapshots" / "job_posts.json")
+    )
+    layoffs_snapshot_path: Path = Path(
+        os.getenv("LAYOFFS_SNAPSHOT_PATH", data_dir / "snapshots" / "layoffs.json")
+    )
+    leadership_snapshot_path: Path = Path(
+        os.getenv("LEADERSHIP_SNAPSHOT_PATH", data_dir / "snapshots" / "leadership.json")
+    )
+    layoffs_csv_url: str = os.getenv("LAYOFFS_CSV_URL", "")
+    email_provider: str = os.getenv("EMAIL_PROVIDER", "mock")
+    resend_api_key: str = os.getenv("RESEND_API_KEY", "")
+    resend_from_email: str = os.getenv("RESEND_FROM_EMAIL", "drafts@tenacious.local")
+    resend_reply_to: str = os.getenv("RESEND_REPLY_TO", "")
+    mailersend_api_key: str = os.getenv("MAILERSEND_API_KEY", "")
+    mailersend_from_email: str = os.getenv("MAILERSEND_FROM_EMAIL", "drafts@tenacious.local")
+    mailersend_from_name: str = os.getenv("MAILERSEND_FROM_NAME", "Tenacious")
+    sms_provider: str = os.getenv("SMS_PROVIDER", "mock")
+    africas_talking_username: str = os.getenv("AFRICASTALKING_USERNAME", "")
+    africas_talking_api_key: str = os.getenv("AFRICASTALKING_API_KEY", "")
+    africas_talking_sender_id: str = os.getenv("AFRICASTALKING_SENDER_ID", "TENACIOUS")
+    hubspot_access_token: str = os.getenv("HUBSPOT_ACCESS_TOKEN", "")
+    hubspot_base_url: str = os.getenv("HUBSPOT_BASE_URL", "https://api.hubapi.com")
+    calcom_api_key: str = os.getenv("CALCOM_API_KEY", "")
+    calcom_api_base: str = os.getenv("CALCOM_API_BASE", "https://api.cal.com")
+    calcom_api_version: str = os.getenv("CALCOM_API_VERSION", "2026-02-25")
+    calcom_event_type_id: str = os.getenv("CALCOM_EVENT_TYPE_ID", "")
+    calcom_username: str = os.getenv("CALCOM_USERNAME", "")
+    calcom_event_type_slug: str = os.getenv("CALCOM_EVENT_TYPE_SLUG", "discovery-call")
+    calcom_default_timezone: str = os.getenv("CALCOM_DEFAULT_TIMEZONE", "UTC")
+    langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+    langfuse_secret_key: str = os.getenv("LANGFUSE_SECRET_KEY", "")
+    langfuse_host: str = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+    langfuse_export_enabled: bool = os.getenv("LANGFUSE_EXPORT_ENABLED", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    tau2_bench_path: Path = Path(os.getenv("TAU2_BENCH_PATH", project_root / "eval" / "tau2-bench"))
+
+
+settings = Settings()
