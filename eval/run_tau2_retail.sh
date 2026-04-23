@@ -17,8 +17,13 @@ else
   DEFAULT_OPENROUTER_LLM=""
 fi
 
-TAU2_AGENT_LLM="${TAU2_AGENT_LLM:-$DEFAULT_OPENROUTER_LLM}"
-TAU2_USER_LLM="${TAU2_USER_LLM:-$TAU2_AGENT_LLM}"
+# Fix 1: Default agent to DeepSeek V3 (stronger reasoning) and user simulator to Flash Lite (cheap).
+# Override via TAU2_AGENT_LLM / TAU2_USER_LLM env vars or OPENROUTER_MODEL fallback.
+DEFAULT_AGENT_LLM="${DEFAULT_OPENROUTER_LLM:-openrouter/deepseek/deepseek-chat}"
+DEFAULT_USER_LLM="${DEFAULT_OPENROUTER_LLM:-openrouter/google/gemini-2.0-flash-lite-001}"
+
+TAU2_AGENT_LLM="${TAU2_AGENT_LLM:-$DEFAULT_AGENT_LLM}"
+TAU2_USER_LLM="${TAU2_USER_LLM:-$DEFAULT_USER_LLM}"
 TAU2_MAX_CONCURRENCY="${TAU2_MAX_CONCURRENCY:-1}"
 TAU2_EVAL_LLM="${TAU2_EVAL_LLM:-$TAU2_AGENT_LLM}"
 TAU2_NL_ASSERTIONS_LLM="${TAU2_NL_ASSERTIONS_LLM:-$TAU2_EVAL_LLM}"
@@ -44,6 +49,6 @@ uv run tau2 run \
   --agent-llm "$TAU2_AGENT_LLM" \
   --user-llm "$TAU2_USER_LLM" \
   --num-trials "${TAU2_NUM_TRIALS:-1}" \
-  --num-tasks "${TAU2_NUM_TASKS:-5}" \
+  --num-tasks "${TAU2_NUM_TASKS:-20}" \
   --max-concurrency "$TAU2_MAX_CONCURRENCY" \
   "$@"
