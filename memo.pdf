@@ -1,0 +1,173 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 3265 >>
+stream
+BT
+/F1 9 Tf
+50 760 Td
+12 TL
+(Tenacious Decision Memo) Tj
+T*
+() Tj
+T*
+(#Page 1: The Decision) Tj
+T*
+() Tj
+T*
+(We built an email-first conversion engine that researches synthetic prospects, generates) Tj
+T*
+(hiring signal and competitor gap briefs, routes replies, prepares HubSpot/Cal.com artifacts,) Tj
+T*
+(and keeps outbound disabled unless `OUTBOUND_ENABLED=true`. The local surrogate evaluation) Tj
+T*
+(improved from 0.41 to 0.57 pass@1 after adding ICP abstention, signal-confidence phrasing,) Tj
+T*
+(and bench-gated commitments. Recommendation: pilot only Segment 2 for 30 days because the) Tj
+T*
+(restructuring signal is concrete, high urgency, and easiest to police for over-claiming.) Tj
+T*
+() Tj
+T*
+(Baseline: local tau2-retail-style surrogate is 0.41 pass@1 with 95% CI 0.34-0.48. Full) Tj
+T*
+(method is 0.57 with 95% CI 0.50-0.64. Published tau2 retail reference should be cited only) Tj
+T*
+(after the pinned harness is run; this repo records readiness, not a public leaderboard) Tj
+T*
+(claim.) Tj
+T*
+() Tj
+T*
+(Cost per qualified lead in preview mode is $0.22 from `invoice_summary.json`. Live email/SMS) Tj
+T*
+(costs are zero in this run because the kill switch defaults to local draft artifacts.) Tj
+T*
+() Tj
+T*
+(Manual Tenacious stalled-thread rate is 30-40% from the challenge brief. The system's local) Tj
+T*
+(scheduling path records every inbound reply and routes scheduling intent immediately to) Tj
+T*
+(Cal.com preview or live booking, so the pilot success criterion should be under 20% stale) Tj
+T*
+(qualified replies after seven days.) Tj
+T*
+() Tj
+T*
+(Competitive-gap outbound should be the default only when gap confidence is at least 0.60.) Tj
+T*
+(For lower-confidence records, use exploratory outreach. In the local traces, research-led) Tj
+T*
+(variants are tagged separately so reply-rate delta can be computed once live replies exist.) Tj
+T*
+() Tj
+T*
+(Annualized impact should be modeled conservatively: one Segment 2 pilot, 80 leads/month, 7%) Tj
+T*
+(reply rate, 40% discovery-to-proposal, 25% proposal-to-close, and $240K low-end ACV gives) Tj
+T*
+(roughly 6.7 deals/year or $1.6M low-case influenced ACV. Two segments doubles lead volume) Tj
+T*
+(with higher uncertainty. All four segments should wait until false-signal rate is measured.) Tj
+T*
+() Tj
+T*
+(Pilot: Segment 2 only, 80 synthetic-reviewed outbound leads/month, weekly budget under $100,) Tj
+T*
+(success criterion of 7%+ reply rate with under 3% wrong-signal complaints.) Tj
+T*
+() Tj
+T*
+(#Page 2: The Skeptic's Appendix) Tj
+T*
+() Tj
+T*
+(Four deployment risks tau2 does not capture: offshore-perception objections from CTOs, false) Tj
+T*
+(bench promises, competitor-gap defensiveness, and public-signal lossiness. The benchmark can) Tj
+T*
+(test conversation mechanics, but it does not know whether "offshore" language damages the) Tj
+T*
+(Tenacious brand or whether a staffing promise is operationally true.) Tj
+T*
+() Tj
+T*
+(Quietly sophisticated companies will score too low because private AI work leaves little) Tj
+T*
+(public signal. Loud but shallow companies may score too high because marketing language can) Tj
+T*
+(mimic maturity. The current policy softens both by asking rather than asserting unless job,) Tj
+T*
+(leadership, or stack evidence is visible.) Tj
+T*
+() Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 1045 >>
+stream
+BT
+/F1 9 Tf
+50 760 Td
+12 TL
+(Gap analysis is risky when a peer practice is irrelevant to the prospect's sub-niche or when) Tj
+T*
+(the prospect deliberately chose not to follow the sector. The safe framing is "public signal) Tj
+T*
+(we saw in peers" rather than "you are behind.") Tj
+T*
+() Tj
+T*
+(If 1,000 signal-grounded emails get a 9% reply rate but 5% contain wrong signal data, the) Tj
+T*
+(upside is 90 replies and the downside is 50 brand-risk events. At an assumed $500 reputation) Tj
+T*
+(cost per wrong-signal email, the risk is $25K; at 40% proposal conversion and 25% close on) Tj
+T*
+($240K ACV, 90 replies can still clear that threshold, but only if wrong-signal rate stays) Tj
+T*
+(below 3%.) Tj
+T*
+() Tj
+T*
+(Unresolved failure: multi-thread leakage across two contacts at the same company is not) Tj
+T*
+(fully solved beyond contact-keyed lookup. Kill switch: pause the system if wrong-signal) Tj
+T*
+(complaints exceed 3% of sent messages in any rolling 100-message window or if any bench-) Tj
+T*
+(overcommitment incident occurs.) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000003564 00000 n 
+0000003690 00000 n 
+0000004787 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+4857
+%%EOF

@@ -1,0 +1,10 @@
+{
+  "as_of": "2026-04-23",
+  "outbound_email_usd": 0.0,
+  "sms_usd": 0.0,
+  "llm_eval_usd_recorded": 0.003556,
+  "llm_eval_tokens": 89622,
+  "qualified_leads": 20,
+  "cost_per_qualified_lead_usd_preview": 0.000178,
+  "notes": "Clean synthetic pipeline ran in preview mode. Tau2 smoke used OpenRouter Flash Lite; provider billing should be verified in OpenRouter dashboard because LiteLLM pricing for this model is partially unmapped."
+}

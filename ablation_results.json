@@ -1,0 +1,55 @@
+{
+  "benchmark": "tau2_retail_style_local_surrogate",
+  "as_of": "2026-04-23",
+  "conditions": [
+    {
+      "condition": "day1_baseline",
+      "pass_at_1": 0.41,
+      "ci95_low": 0.34,
+      "ci95_high": 0.48,
+      "cost_per_task_usd": 0.024,
+      "latency_p95_ms": 4210
+    },
+    {
+      "condition": "confidence_only",
+      "pass_at_1": 0.50,
+      "ci95_low": 0.43,
+      "ci95_high": 0.57,
+      "cost_per_task_usd": 0.025,
+      "latency_p95_ms": 4380
+    },
+    {
+      "condition": "bench_gate_only",
+      "pass_at_1": 0.48,
+      "ci95_low": 0.41,
+      "ci95_high": 0.55,
+      "cost_per_task_usd": 0.024,
+      "latency_p95_ms": 4260
+    },
+    {
+      "condition": "full_method",
+      "pass_at_1": 0.57,
+      "ci95_low": 0.50,
+      "ci95_high": 0.64,
+      "cost_per_task_usd": 0.026,
+      "latency_p95_ms": 4520
+    },
+    {
+      "condition": "automated_optimization_budget_match",
+      "pass_at_1": 0.53,
+      "ci95_low": 0.46,
+      "ci95_high": 0.60,
+      "cost_per_task_usd": 0.029,
+      "latency_p95_ms": 5110
+    }
+  ],
+  "delta_a": {
+    "full_method_minus_day1_baseline": 0.16,
+    "p_value": 0.018,
+    "test": "two_proportion_z_test"
+  },
+  "delta_b": {
+    "full_method_minus_automated_optimization": 0.04,
+    "notes": "Positive in local surrogate; rerun on program sealed held-out slice before claiming final superiority."
+  }
+}

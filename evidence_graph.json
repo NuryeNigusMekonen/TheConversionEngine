@@ -1,0 +1,33 @@
+{
+  "claims": [
+    {
+      "claim": "Clean synthetic pipeline produced 20 interactions with p50/p95 latency.",
+      "source": "agent/data/submission_run_summary.json",
+      "trace_ids": [
+        "clean_run_pipeline_summary"
+      ]
+    },
+    {
+      "claim": "Tau2 retail smoke completed with Gemini 2.0 Flash Lite and reward 0.0 on one task.",
+      "source": "eval/tau2-bench/data/simulations/conversion_engine_smoke_flash_lite/results.json",
+      "trace_ids": [
+        "tau2_smoke_flash_lite"
+      ]
+    },
+    {
+      "claim": "Configured Gemini 2.0 Flash smoke hit upstream OpenRouter provider rate limits.",
+      "source": "eval/tau2-bench/data/simulations/conversion_engine_smoke/results.json",
+      "trace_ids": []
+    },
+    {
+      "claim": "Current manual stalled-thread rate is 30-40%.",
+      "source": "docs/TRP1 Challenge Week 10_ Conversion Engine for Sales Automation.md",
+      "trace_ids": []
+    },
+    {
+      "claim": "Talent outsourcing ACV range is $240K-$720K.",
+      "source": "docs/TRP1 Challenge Week 10_ Conversion Engine for Sales Automation.md",
+      "trace_ids": []
+    }
+  ]
+}
