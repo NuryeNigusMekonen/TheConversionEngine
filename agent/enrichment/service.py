@@ -3,15 +3,18 @@ import json
 import re
 
 from agent.config import settings
+from agent.enrichment.ai_maturity import collect_ai_maturity_inputs, score_ai_maturity
+from agent.enrichment.common import utc_now_iso
+from agent.enrichment.competitor_gap import build_competitor_gap_brief
 from agent.enrichment.connectors import (
     crunchbase_connector,
-    job_posts_connector,
-    layoffs_connector,
-    leadership_connector,
 )
+from agent.enrichment.crunchbase_odm import build_crunchbase_funding_signal
+from agent.enrichment.job_post_scraper import build_job_post_signal
+from agent.enrichment.layoffs_fyi_signal import build_layoff_signal
+from agent.enrichment.leadership_changes import build_leadership_change_signal
 from agent.schemas.briefs import (
     CompetitorGapBrief,
-    EvidenceRef,
     BenchMatch,
     HiringSignal,
     HiringSignalBrief,
@@ -34,14 +37,6 @@ class EnrichmentService:
         "devtools": {"dev", "cloud", "infra", "platform", "data", "stack"},
     }
 
-    PEER_COMPANIES = {
-        "fintech": ["LedgerPeak", "Northbank OS", "ClearMint", "Arc Treasury"],
-        "healthtech": ["CareGrid", "SignalRx", "ClinicFlow", "PatientLake"],
-        "commerce": ["CartPilot", "ModeMarket", "RetailGraph", "LoopSupply"],
-        "devtools": ["Buildplane", "OrbitStack", "TensorDock", "Lakebase"],
-        "general_b2b": ["Northstar Labs", "RelayCore", "Axiom Works", "Fieldcraft"],
-    }
-
     def _stable_int(self, key: str, start: int, end: int) -> int:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         span = end - start + 1
@@ -56,22 +51,6 @@ class EnrichmentService:
             if tokens & keywords:
                 return sector
         return "general_b2b"
-
-    def _infer_ai_maturity(
-        self,
-        tokens: set[str],
-        job_openings: int,
-        ai_roles: int,
-    ) -> tuple[int, str, float]:
-        ai_keywords = {"ai", "ml", "llm", "agent", "model", "inference", "data"}
-        ai_hits = len(tokens & ai_keywords) + ai_roles
-        if ai_hits >= 4 and job_openings >= 8:
-            return 3, "Open roles and company-language suggest an active AI function.", 0.82
-        if ai_hits >= 2 or ai_roles >= 1:
-            return 2, "Some AI or data-platform evidence is visible in the source records.", 0.71
-        if job_openings >= 4:
-            return 1, "Engineering growth is visible, but AI-specific signals are still limited.", 0.54
-        return 0, "No reliable AI-specific evidence was found in the matched records.", 0.41
 
     def _load_bench_capacity(self) -> dict[str, int]:
         if not settings.bench_summary_path.exists():
@@ -144,20 +123,6 @@ class EnrichmentService:
             return "abstain", round(confidence, 2)
         return segment, round(min(confidence, 0.94), 2)
 
-    def _build_evidence(
-        self,
-        source_name: str,
-        reference: str,
-        note: str,
-    ) -> list[EvidenceRef]:
-        return [
-            EvidenceRef(
-                source_name=source_name,
-                reference=reference,
-                note=note,
-            )
-        ]
-
     def enrich(self, intake: LeadIntakeRequest) -> tuple[
         ProspectRecord,
         HiringSignalBrief,
@@ -166,70 +131,76 @@ class EnrichmentService:
         seed_key = f"{intake.company_name}|{intake.company_domain or ''}|{intake.contact_email or ''}"
         tokens = self._tokens(intake.company_name, intake.company_domain)
 
-        company_record = crunchbase_connector.lookup(intake.company_name, intake.company_domain)
-        jobs_record = job_posts_connector.lookup(intake.company_name, intake.company_domain)
-        layoffs_record = layoffs_connector.lookup(intake.company_name, intake.company_domain)
-        leadership_record = leadership_connector.lookup(intake.company_name, intake.company_domain)
+        funding_signal = build_crunchbase_funding_signal(
+            intake.company_name,
+            intake.company_domain,
+        )
+        jobs_signal = build_job_post_signal(
+            intake.company_name,
+            intake.company_domain,
+        )
+        layoff_signal = build_layoff_signal(
+            intake.company_name,
+            intake.company_domain,
+        )
+        leadership_signal = build_leadership_change_signal(
+            intake.company_name,
+            intake.company_domain,
+        )
         source_hits = sum(
-            1 for record in (company_record, jobs_record, layoffs_record, leadership_record) if record
+            1
+            for signal in (funding_signal, jobs_signal, layoff_signal, leadership_signal)
+            if signal["matched"]
         )
 
-        sector = (
-            (company_record or {}).get("sector")
-            or self._infer_sector(tokens)
-        )
+        sector = funding_signal["sector"] or self._infer_sector(tokens)
         employee_estimate = int(
-            (company_record or {}).get("employee_count")
+            funding_signal["employee_count"]
             or self._stable_int(seed_key + "employees", 18, 900)
         )
-        funding_musd = int(
-            (company_record or {}).get("funding_musd")
-            or self._stable_int(seed_key + "funding", 4, 28)
-        )
-        funding_months_ago = int(
-            (company_record or {}).get("funding_months_ago")
-            or self._stable_int(seed_key + "funding_months", 1, 6)
-        )
-        job_openings = int(
-            (jobs_record or {}).get("open_engineering_roles")
-            or self._stable_int(seed_key + "jobs", 1, 18)
-        )
-        ai_roles = int((jobs_record or {}).get("ai_roles") or 0)
-        growth_delta_60d_pct = int((jobs_record or {}).get("growth_delta_60d_pct") or 0)
-        job_examples = (jobs_record or {}).get("examples") or []
+        company_record = crunchbase_connector.lookup(intake.company_name, intake.company_domain) or {}
+        funding_musd = int(funding_signal["funding_musd"] or 0)
+        funding_months_ago = int(funding_signal["funding_months_ago"] or 999)
+        job_openings = int(jobs_signal["open_engineering_roles"] or 0)
+        ai_roles = int(jobs_signal["ai_roles"] or 0)
+        job_examples = jobs_signal["examples"] or []
         tokens |= self._tokens(*job_examples)
-        layoff_days_ago = int(
-            (layoffs_record or {}).get("days_ago")
-            or self._stable_int(seed_key + "layoff_days", 25, 150)
-        )
-        layoff_pct = int(
-            (layoffs_record or {}).get("percent")
-            or self._stable_int(seed_key + "layoff_pct", 6, 22)
-        )
-        leadership_days_ago = int(
-            (leadership_record or {}).get("days_ago")
-            or self._stable_int(seed_key + "leader_days", 18, 120)
-        )
+        layoff_days_ago = int(layoff_signal["days_ago"] or 999)
+        layoff_pct = int(layoff_signal["percent"] or 0)
+        leadership_days_ago = int(leadership_signal["days_ago"] or 999)
 
-        ai_maturity_score, ai_justification, ai_confidence = self._infer_ai_maturity(
-            tokens=tokens,
-            job_openings=job_openings,
+        ai_maturity_inputs = collect_ai_maturity_inputs(
+            company_name=intake.company_name,
+            company_domain=intake.company_domain,
+            job_examples=job_examples,
             ai_roles=ai_roles,
+            open_engineering_roles=job_openings,
+            leadership_role=leadership_signal.get("role"),
+            leadership_person=leadership_signal.get("person"),
+            company_tokens=tokens,
+            github_activity_text=company_record.get("github_activity"),
+            executive_commentary_text=company_record.get("executive_commentary"),
+            modern_stack_text=company_record.get("modern_stack"),
+            strategic_communications_text=company_record.get("strategic_communications"),
         )
+        ai_maturity_assessment = score_ai_maturity(ai_maturity_inputs)
+        ai_maturity_score = ai_maturity_assessment.score
+        ai_justification = ai_maturity_assessment.summary
+        ai_confidence = ai_maturity_assessment.confidence
 
-        funding_confidence = 0.86 if company_record else (0.68 if funding_months_ago <= 4 else 0.55)
-        jobs_confidence = 0.84 if jobs_record else (0.66 if job_openings >= 8 else 0.47)
-        layoff_confidence = 0.82 if layoffs_record else (0.64 if employee_estimate >= 180 else 0.43)
-        leadership_confidence = 0.8 if leadership_record else (0.69 if leadership_days_ago <= 90 else 0.44)
+        funding_confidence = float(funding_signal["confidence"])
+        jobs_confidence = float(jobs_signal["confidence"])
+        layoff_confidence = float(layoff_signal["confidence"])
+        leadership_confidence = float(leadership_signal["confidence"])
 
         primary_segment, segment_confidence = self._classify_segment(
             employee_estimate=employee_estimate,
             funding_musd=funding_musd,
             funding_months_ago=funding_months_ago,
             job_openings=job_openings,
-            layoff_days_ago=layoff_days_ago if layoffs_record else 999,
+            layoff_days_ago=layoff_days_ago if layoff_signal["matched"] else 999,
             layoff_pct=layoff_pct,
-            leadership_days_ago=leadership_days_ago if leadership_record else 999,
+            leadership_days_ago=leadership_days_ago if leadership_signal["matched"] else 999,
             ai_maturity_score=ai_maturity_score,
             ai_roles=ai_roles,
             source_hits=source_hits,
@@ -255,36 +226,36 @@ class EnrichmentService:
                 signal_name="funding_event",
                 score=funding_confidence,
                 rationale=(
-                    "Matched local Crunchbase-style snapshot data."
-                    if company_record
-                    else "No company snapshot match was found, so funding timing used heuristic fallback."
+                    "Crunchbase ODM match found and funding window filter applied."
+                    if funding_signal["matched"]
+                    else "No Crunchbase ODM record matched the company."
                 ),
             ),
             SignalConfidence(
                 signal_name="job_post_velocity",
                 score=jobs_confidence,
                 rationale=(
-                    "Matched local public job-post snapshot data."
-                    if jobs_record
-                    else "No job-post snapshot match was found, so hiring estimates used heuristic fallback."
+                    "Job-post velocity computed over a 60-day window from public-page snapshot data."
+                    if jobs_signal["matched"]
+                    else "No BuiltIn, Wellfound, or LinkedIn public-page snapshot matched the company."
                 ),
             ),
             SignalConfidence(
                 signal_name="layoff_signal",
                 score=layoff_confidence,
                 rationale=(
-                    "Matched layoff snapshot data."
-                    if layoffs_record
-                    else "No layoff snapshot match was found, so restructuring pressure used heuristic fallback."
+                    "Matched layoffs.fyi source data."
+                    if layoff_signal["matched"]
+                    else "No layoffs.fyi history matched the company."
                 ),
             ),
             SignalConfidence(
                 signal_name="leadership_change",
                 score=leadership_confidence,
                 rationale=(
-                    "Matched leadership-change snapshot data."
-                    if leadership_record
-                    else "No leadership snapshot match was found, so timing used heuristic fallback."
+                    "Matched press or Crunchbase-derived leadership change data."
+                    if leadership_signal["matched"]
+                    else "No leadership change was found in the active window."
                 ),
             ),
             SignalConfidence(
@@ -294,78 +265,38 @@ class EnrichmentService:
             ),
         ]
 
+        signal_modules = [funding_signal, jobs_signal, layoff_signal, leadership_signal]
         hiring_signals = [
             HiringSignal(
-                name="funding_event",
-                summary=f"Funding signal: about {funding_musd}M raised {funding_months_ago} months ago.",
-                confidence=funding_confidence,
-                evidence=self._build_evidence(
-                    "crunchbase_snapshot" if company_record else "heuristic_fallback",
-                    company_record.get("domain", seed_key) if company_record else seed_key,
-                    "Matched company snapshot." if company_record else "Fallback estimate derived from the input seed.",
-                ),
-            ),
-            HiringSignal(
-                name="job_post_velocity",
-                summary=(
-                    f"Public job-post signal: {job_openings} engineering openings, "
-                    f"{growth_delta_60d_pct}% change over 60 days."
-                ),
-                confidence=jobs_confidence,
-                evidence=self._build_evidence(
-                    "job_posts_snapshot" if jobs_record else "heuristic_fallback",
-                    jobs_record.get("domain", seed_key) if jobs_record else seed_key,
-                    "Matched job-post snapshot." if jobs_record else "Fallback estimate derived from the input seed.",
-                ),
-            ),
-            HiringSignal(
-                name="leadership_change",
-                summary=(
-                    f"Leadership signal: {(leadership_record or {}).get('role', 'engineering leadership')} "
-                    f"change about {leadership_days_ago} days ago."
-                ),
-                confidence=leadership_confidence,
-                evidence=self._build_evidence(
-                    "leadership_snapshot" if leadership_record else "heuristic_fallback",
-                    leadership_record.get("domain", seed_key) if leadership_record else seed_key,
-                    "Matched leadership-change snapshot."
-                    if leadership_record
-                    else "Fallback estimate derived from the input seed.",
-                ),
-            ),
-        ]
-
-        if layoffs_record or employee_estimate >= 180:
-            hiring_signals.append(
-                HiringSignal(
-                    name="layoff_signal",
-                    summary=(
-                        f"Layoff signal: about {layoff_pct}% reduction roughly {layoff_days_ago} days ago."
-                    ),
-                    confidence=layoff_confidence,
-                    evidence=self._build_evidence(
-                        "layoffs_snapshot" if layoffs_record else "heuristic_fallback",
-                        layoffs_record.get("domain", seed_key) if layoffs_record else seed_key,
-                        "Matched layoffs snapshot."
-                        if layoffs_record
-                        else "Fallback estimate derived from the input seed.",
-                    ),
-                )
+                name=signal_payload["name"],
+                summary=signal_payload["summary"],
+                confidence=float(signal_payload["confidence"]),
+                evidence=signal_payload["source_attribution"],
+                source_attribution=signal_payload["source_attribution"],
+                observed_at=signal_payload["observed_at"],
+                collected_at=signal_payload["collected_at"],
+                edge_case=signal_payload["edge_case"],
             )
+            for signal_payload in signal_modules
+        ]
 
         do_not_claim = [
             "Do not promise staffing capacity without bench confirmation.",
         ]
         if primary_segment == "abstain":
             do_not_claim.append("Do not use a segment-specific pitch; ask one exploratory question instead.")
-        if not company_record:
+        if not funding_signal["matched"]:
             do_not_claim.append("Do not present funding details as verified until a company snapshot match exists.")
-        if not jobs_record:
-            do_not_claim.append("Do not claim aggressive hiring unless job-post evidence is matched.")
+        if jobs_signal["edge_case"] == "missing_job_post_record":
+            do_not_claim.append("Do not claim hiring velocity unless public job-post evidence is matched.")
+        if jobs_signal["edge_case"] == "zero_open_job_posts":
+            do_not_claim.append("Do not imply active hiring when the public job-post window is currently zero.")
         if ai_maturity_score < 2:
             do_not_claim.append("Do not pitch a specialized AI capability gap as if it is confirmed.")
-        if not layoffs_record:
+        if layoff_signal["edge_case"] == "no_layoff_history":
             do_not_claim.append("Do not assert restructuring pressure directly without layoff evidence.")
+        if leadership_signal["edge_case"] == "no_leadership_change_in_window":
+            do_not_claim.append("Do not frame outreach around a leadership transition that was not observed in-window.")
 
         brief_mode = "snapshot-backed" if source_hits >= 2 else "hybrid"
         required_stacks = self._infer_required_stacks(tokens, ai_roles, sector)
@@ -394,12 +325,14 @@ class EnrichmentService:
                 f"{employee_estimate} employees, likely segment '{segment_label}'. "
                 f"Matched {source_hits} source records across the current local enrichment snapshots."
             ),
+            generated_at=utc_now_iso(),
             primary_segment=segment_label,
             segment_confidence=segment_confidence,
             recommended_pitch_angle=(
                 "Lead with the strongest matched public signal first, then qualify gently where signals are still partial."
             ),
             ai_maturity_score=ai_maturity_score,
+            ai_maturity_assessment=ai_maturity_assessment,
             ai_maturity_justification=ai_justification,
             bench_match=bench_match,
             confidence_by_signal=confidence_by_signal,
@@ -407,37 +340,12 @@ class EnrichmentService:
             do_not_claim=do_not_claim,
         )
 
-        peer_candidates = []
-        snapshot_records = crunchbase_connector._load_records()
-        for record in snapshot_records:
-            if record.get("company_name") != intake.company_name and record.get("sector") == sector:
-                peer_candidates.append(record["company_name"])
-        peer_companies = peer_candidates[:4] or self.PEER_COMPANIES[sector]
-        missing_practices = [
-            "Publicly visible engineering-hiring specificity",
-            "Clear AI or data-platform signaling",
-        ]
-        if ai_maturity_score >= 2:
-            missing_practices = [
-                "Sharable proof-points tied to specialized engineering execution",
-                "More explicit public signal around delivery capability differentiation",
-            ]
-
-        competitor_gap_brief = CompetitorGapBrief(
-            peer_group_definition=(
-                f"Peer set drawn from the local {sector} company snapshot for similarly staged companies."
-            ),
-            peer_companies=peer_companies,
-            top_quartile_practices=[
-                "Signals delivery priorities through public hiring and engineering messaging.",
-                "Shows stronger evidence of platform or AI execution maturity.",
-                "Makes capability focus legible enough for a warm research-led outreach angle.",
-            ],
-            prospect_missing_practices=missing_practices,
-            safe_gap_framing=(
-                "Use the gap as a hypothesis about what peers make legible in public, not as a judgment that the prospect is behind."
-            ),
-            confidence=min(0.86, round((jobs_confidence + ai_confidence) / 2, 2)),
+        competitor_gap_brief = build_competitor_gap_brief(
+            company_name=intake.company_name,
+            company_domain=intake.company_domain,
+            sector=sector,
+            target_employee_count=employee_estimate,
+            target_ai_assessment=ai_maturity_assessment,
         )
 
         return prospect, hiring_signal_brief, competitor_gap_brief
