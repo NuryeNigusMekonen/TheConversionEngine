@@ -1,8 +1,14 @@
 import json
 
 from agent.config import settings
+from agent.schemas.prospect import InboundMessageRequest
 from agent.schemas.tools import ToolExecutionResult, ToolStatus
+from agent.scheduling.calcom import calcom_client
 from agent.utils.http import request_form
+
+
+class SmsWebhookError(RuntimeError):
+    pass
 
 
 class SmsChannel:
@@ -31,16 +37,34 @@ class SmsChannel:
         )
         return str(artifact_path)
 
-    def send(self, phone_number: str | None, body: str, prospect_id: str) -> ToolExecutionResult:
+    def send(
+        self,
+        phone_number: str | None,
+        body: str,
+        prospect_id: str,
+        *,
+        allow_warm_lead: bool = False,
+        booking_link: str | None = None,
+    ) -> ToolExecutionResult:
         payload = {
             "provider": settings.sms_provider,
             "draft": True,
             "outbound_enabled": settings.outbound_enabled,
             "phone_number": phone_number or "warm-lead-preview",
             "body": body,
+            "warm_lead_gate_passed": allow_warm_lead,
+            "booking_link": booking_link,
         }
         artifact_ref = self._write_artifact(payload, prospect_id)
         status = self.status()
+        if not allow_warm_lead:
+            return ToolExecutionResult(
+                name="sms",
+                mode=status.mode,
+                status="skipped",
+                message="SMS send blocked by warm-lead gate because no prior email reply is recorded.",
+                artifact_ref=artifact_ref,
+            )
         if status.configured and phone_number:
             try:
                 _, response_text, _ = request_form(
@@ -83,6 +107,49 @@ class SmsChannel:
                 else "SMS handoff preview captured because no phone number was provided."
             ),
             artifact_ref=artifact_ref,
+        )
+
+    def send_booking_options(
+        self,
+        *,
+        phone_number: str | None,
+        prospect_id: str,
+        company_name: str,
+        contact_name: str | None,
+        contact_email: str | None,
+        allow_warm_lead: bool = False,
+    ) -> tuple[ToolExecutionResult, str]:
+        booking_link, _ = calcom_client.generate_booking_link(
+            company_name=company_name,
+            contact_email=contact_email,
+            prospect_id=prospect_id,
+            source_channel="sms",
+        )
+        body = (
+            f"Hi {contact_name or 'there'}, your discovery-call link is ready: {booking_link}. "
+            "Reply here if you want me to coordinate a different time."
+        )
+        result = self.send(
+            phone_number=phone_number,
+            body=body,
+            prospect_id=prospect_id,
+            allow_warm_lead=allow_warm_lead,
+            booking_link=booking_link,
+        )
+        return result, body
+
+    def handle_africastalking_webhook(self, payload: dict) -> InboundMessageRequest:
+        body = payload.get("body") if isinstance(payload.get("body"), dict) else payload
+        sender = body.get("from") or body.get("phoneNumber") or body.get("msisdn")
+        message_body = body.get("text") or body.get("body") or body.get("message")
+        if not sender or not message_body:
+            raise SmsWebhookError(
+                "Africa's Talking inbound webhook is missing sender phone number or message body."
+            )
+        return InboundMessageRequest(
+            contact_phone=str(sender).strip(),
+            channel="sms",
+            body=str(message_body).strip(),
         )
 
 

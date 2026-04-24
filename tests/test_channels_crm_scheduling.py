@@ -5,15 +5,12 @@ in .env.example defaults; live sends require explicit OUTBOUND_ENABLED=true).
 """
 
 import json
-from pathlib import Path
-
-import pytest
 
 from agent.channels.email import EmailChannel
 from agent.channels.sms import SmsChannel
+from agent.config import settings
 from agent.crm.hubspot import HubSpotClient
 from agent.scheduling.calcom import CalComClient
-from agent.config import settings
 
 
 # ---------------------------------------------------------------------------
@@ -88,8 +85,9 @@ def test_sms_send_writes_artifact() -> None:
         phone_number=None,
         body="Hi, are you free Thursday for a 15-minute discovery call?",
         prospect_id="pros_ch_sms_001",
+        allow_warm_lead=False,
     )
-    assert result.status in ("executed", "previewed"), f"Unexpected status: {result.status}"
+    assert result.status == "skipped", f"Unexpected status: {result.status}"
     assert result.artifact_ref is not None
 
 
@@ -99,9 +97,24 @@ def test_sms_artifact_exists_after_send() -> None:
         phone_number=None,
         body="Tenacious: booking confirmation coming via Cal.com.",
         prospect_id="pros_ch_sms_002",
+        allow_warm_lead=False,
     )
     artifact = settings.outbox_dir / "pros_ch_sms_002_sms.json"
     assert artifact.exists()
+
+
+def test_sms_booking_options_include_cal_link_when_gate_open() -> None:
+    channel = SmsChannel()
+    result, body = channel.send_booking_options(
+        phone_number="+254700000000",
+        prospect_id="pros_ch_sms_003",
+        company_name="ClearMint",
+        contact_name="Amara Cole",
+        contact_email="amara@clearmint.io",
+        allow_warm_lead=True,
+    )
+    assert result.status in ("executed", "previewed", "error")
+    assert "https://cal.com/" in body
 
 
 def test_sms_status_always_available() -> None:
@@ -145,6 +158,29 @@ def test_hubspot_artifact_contains_company_info() -> None:
     assert "OrbitStack" in json.dumps(data)
 
 
+def test_hubspot_records_contact_activity_and_enrichment() -> None:
+    client = HubSpotClient()
+    results = client.record_conversation_event(
+        {
+            "company_name": "ClearMint",
+            "company_domain": "clearmint.io",
+            "email": "amara@clearmint.io",
+            "contact_name": "Amara Cole",
+            "segment": "recently_funded_startup",
+            "segment_confidence": 0.91,
+            "ai_maturity_score": 3,
+            "bench_match": {"python": "available"},
+            "trace_id": "tr_test_hubspot",
+        },
+        "pros_ch_hs_003",
+        activity_type="email_reply_received",
+        activity_summary="Inbound email reply processed.",
+        metadata={"channel": "email"},
+    )
+    assert len(results) == 3
+    assert [result.name for result in results] == ["hubspot", "hubspot", "hubspot"]
+
+
 def test_hubspot_status_reports_mode() -> None:
     client = HubSpotClient()
     status = client.status()
@@ -183,6 +219,18 @@ def test_calcom_artifact_has_suggested_slots() -> None:
     data = _read_outbox("pros_ch_cal_002", "calcom")
     assert "suggested_slots_utc" in data
     assert len(data["suggested_slots_utc"]) >= 2
+
+
+def test_calcom_generate_booking_link_contains_channel_context() -> None:
+    client = CalComClient()
+    booking_link, artifact_ref = client.generate_booking_link(
+        company_name="PatientLake",
+        contact_email="ops@patientlake.example",
+        prospect_id="pros_ch_cal_004",
+        source_channel="email",
+    )
+    assert "source=email" in booking_link
+    assert artifact_ref.endswith("_calcom.json")
 
 
 def test_calcom_slots_are_iso8601() -> None:

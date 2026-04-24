@@ -1,8 +1,14 @@
 import json
 
 from agent.config import settings
+from agent.schemas.prospect import InboundMessageRequest
 from agent.schemas.tools import ToolExecutionResult, ToolStatus
+from agent.scheduling.calcom import calcom_client
 from agent.utils.http import request_json
+
+
+class EmailWebhookError(RuntimeError):
+    pass
 
 
 class EmailChannel:
@@ -123,6 +129,88 @@ class EmailChannel:
                 f"Email payload prepared for {recipient or 'local sink'} via {status.label}."
             ),
             artifact_ref=artifact_ref,
+        )
+
+    def send_booking_options(
+        self,
+        *,
+        recipient: str | None,
+        prospect_id: str,
+        company_name: str,
+        contact_name: str | None,
+        contact_email: str | None,
+    ) -> tuple[ToolExecutionResult, str]:
+        booking_link, _ = calcom_client.generate_booking_link(
+            company_name=company_name,
+            contact_email=contact_email,
+            prospect_id=prospect_id,
+            source_channel="email",
+        )
+        body = (
+            f"Hi {contact_name or 'there'},\n\n"
+            "I set aside two discovery-call options for the delivery lead. "
+            f"You can confirm the best slot here: {booking_link}\n\n"
+            "If you prefer, reply with two windows and I will line it up manually.\n\n"
+            "Best,\nTenacious research workflow"
+        )
+        result = self.send(
+            recipient=recipient,
+            subject=f"Booking options for {company_name}",
+            body=body,
+            prospect_id=prospect_id,
+        )
+        return result, body
+
+    def handle_resend_reply_webhook(self, payload: dict) -> InboundMessageRequest:
+        body = payload.get("body") if isinstance(payload.get("body"), dict) else payload
+        data = body.get("data") if isinstance(body.get("data"), dict) else body
+        sender = data.get("from") or data.get("reply_to") or body.get("from")
+        if isinstance(sender, list):
+            sender = sender[0] if sender else None
+        if isinstance(sender, dict):
+            sender = sender.get("email") or sender.get("from")
+        message_body = (
+            data.get("text")
+            or data.get("textBody")
+            or body.get("text")
+            or body.get("textBody")
+            or data.get("html")
+            or body.get("html")
+        )
+        if not sender or not message_body:
+            raise EmailWebhookError(
+                "Resend reply webhook is missing sender email or reply body."
+            )
+        return InboundMessageRequest(
+            contact_email=str(sender).strip().lower(),
+            channel="email",
+            body=str(message_body).strip(),
+        )
+
+    def handle_mailersend_reply_webhook(self, payload: dict) -> InboundMessageRequest:
+        body = payload.get("body") if isinstance(payload.get("body"), dict) else payload
+        data = body.get("data") if isinstance(body.get("data"), dict) else body
+        sender = data.get("from") or body.get("from") or data.get("sender")
+        if isinstance(sender, list):
+            sender = sender[0] if sender else None
+        if isinstance(sender, dict):
+            sender = sender.get("email") or sender.get("address")
+        message_body = (
+            data.get("text")
+            or data.get("text_plain")
+            or body.get("text")
+            or body.get("text_plain")
+            or data.get("html")
+            or body.get("html")
+        )
+        if not sender or not message_body:
+            raise EmailWebhookError(
+                "MailerSend reply webhook is missing sender email or reply body."
+            )
+        return InboundMessageRequest(
+            contact_email=str(sender).strip().lower(),
+            channel="email",
+            body=str(message_body).strip(),
         )
 
 

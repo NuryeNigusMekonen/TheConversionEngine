@@ -1,9 +1,14 @@
 import json
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 from agent.config import settings
 from agent.schemas.tools import ToolExecutionResult, ToolStatus
 from agent.utils.http import request_json
+
+
+class CalComWebhookError(RuntimeError):
+    pass
 
 
 class CalComClient:
@@ -27,14 +32,50 @@ class CalComClient:
         artifact_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return str(artifact_path)
 
-    def book_preview(self, company_name: str, contact_email: str | None, prospect_id: str) -> ToolExecutionResult:
+    def generate_booking_link(
+        self,
+        *,
+        company_name: str,
+        contact_email: str | None,
+        prospect_id: str,
+        source_channel: str,
+    ) -> tuple[str, str]:
+        base_url = "https://cal.com"
+        if settings.calcom_username:
+            base_url = f"{base_url}/{settings.calcom_username}"
+        else:
+            base_url = f"{base_url}/{settings.calcom_event_type_slug}"
+        query = urlencode(
+            {
+                key: value
+                for key, value in {
+                    "email": contact_email or "",
+                    "name": company_name,
+                    "source": source_channel,
+                    "utm_source": "conversion-engine",
+                }.items()
+                if value
+            }
+        )
+        booking_link = f"{base_url}?{query}" if query else base_url
         artifact_ref = self._write_artifact(
             {
                 "event_type_slug": settings.calcom_event_type_slug,
                 "company_name": company_name,
                 "contact_email": contact_email,
+                "source_channel": source_channel,
+                "booking_link": booking_link,
             },
             prospect_id,
+        )
+        return booking_link, artifact_ref
+
+    def book_preview(self, company_name: str, contact_email: str | None, prospect_id: str) -> ToolExecutionResult:
+        booking_link, artifact_ref = self.generate_booking_link(
+            company_name=company_name,
+            contact_email=contact_email,
+            prospect_id=prospect_id,
+            source_channel="calendar",
         )
         status = self.status()
         if status.configured and contact_email:
@@ -107,9 +148,40 @@ class CalComClient:
             name="calcom",
             mode=status.mode,
             status="executed" if status.configured else "previewed",
-            message="Scheduling preview generated with two candidate discovery-call slots.",
+            message=f"Scheduling preview generated with two candidate discovery-call slots and booking link {booking_link}.",
             artifact_ref=artifact_ref,
         )
+
+    def handle_confirmation_webhook(self, payload: dict) -> dict[str, str]:
+        body = payload.get("body") if isinstance(payload.get("body"), dict) else payload
+        data = body.get("data") if isinstance(body.get("data"), dict) else body
+        attendee = data.get("attendee") if isinstance(data.get("attendee"), dict) else {}
+        contact_email = attendee.get("email") or data.get("email") or body.get("email")
+        booking_external_id = (
+            data.get("uid")
+            or data.get("bookingUid")
+            or data.get("booking_id")
+            or data.get("id")
+            or body.get("uid")
+        )
+        booking_status = (
+            data.get("status")
+            or body.get("status")
+            or body.get("triggerEvent")
+            or "confirmed"
+        )
+        if not contact_email or not booking_external_id:
+            raise CalComWebhookError(
+                "Cal.com confirmation webhook is missing attendee email or booking identifier."
+            )
+        return {
+            "contact_email": str(contact_email).strip().lower(),
+            "booking_external_id": str(booking_external_id),
+            "booking_status": str(booking_status),
+            "company_name": str(
+                attendee.get("name") or data.get("title") or body.get("title") or "Unknown company"
+            ),
+        }
 
 
 calcom_client = CalComClient()

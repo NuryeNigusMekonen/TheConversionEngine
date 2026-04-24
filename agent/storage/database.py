@@ -60,6 +60,20 @@ def initialize_database() -> None:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS interaction_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                prospect_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                channel TEXT,
+                provider TEXT,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (prospect_id) REFERENCES prospects (prospect_id)
+            )
+            """
+        )
         _ensure_column(connection, "prospects", "contact_phone", "TEXT")
         _ensure_column(connection, "prospects", "primary_segment_label", "TEXT")
         _ensure_column(connection, "prospects", "segment_confidence", "REAL NOT NULL DEFAULT 0")

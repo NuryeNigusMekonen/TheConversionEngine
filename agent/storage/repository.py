@@ -87,6 +87,85 @@ class ProspectRepository:
             row = connection.execute("SELECT COUNT(*) AS count FROM prospects").fetchone()
         return int(row["count"])
 
+    def update_status(self, prospect_id: str, status: str) -> None:
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with get_connection() as connection:
+            connection.execute(
+                """
+                UPDATE prospects
+                SET status = ?, updated_at = ?
+                WHERE prospect_id = ?
+                """,
+                (status, updated_at, prospect_id),
+            )
+
+    def record_interaction_event(
+        self,
+        prospect_id: str,
+        event_type: str,
+        *,
+        channel: str | None = None,
+        provider: str | None = None,
+        payload: dict | None = None,
+    ) -> None:
+        created_at = datetime.now(timezone.utc).isoformat()
+        with get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO interaction_events (
+                    prospect_id,
+                    event_type,
+                    channel,
+                    provider,
+                    payload_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    prospect_id,
+                    event_type,
+                    channel,
+                    provider,
+                    json.dumps(payload or {}),
+                    created_at,
+                ),
+            )
+
+    def has_interaction_event(self, prospect_id: str, event_type: str) -> bool:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM interaction_events
+                WHERE prospect_id = ? AND event_type = ?
+                LIMIT 1
+                """,
+                (prospect_id, event_type),
+            ).fetchone()
+        return row is not None
+
+    def list_interaction_events(self, prospect_id: str) -> list[dict]:
+        with get_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_type, channel, provider, payload_json, created_at
+                FROM interaction_events
+                WHERE prospect_id = ?
+                ORDER BY event_id ASC
+                """,
+                (prospect_id,),
+            ).fetchall()
+        return [
+            {
+                "event_type": row["event_type"],
+                "channel": row["channel"],
+                "provider": row["provider"],
+                "payload": json.loads(row["payload_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
     def save_snapshot(
         self,
         prospect: ProspectRecord,
