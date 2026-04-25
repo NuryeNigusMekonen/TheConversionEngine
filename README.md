@@ -14,30 +14,83 @@ End-to-end implementation slice for the Week 10 Tenacious conversion engine chal
 - Email reply handler for pricing guardrails, scheduling, SMS handoff, and opt-out
 - Act I-IV evidence artifacts and a draft decision memo
 
+## Orchestration Architecture
+
+The system is built as a custom Python orchestration layer — no workflow framework. The runtime
+stack is:
+
+```
+FastAPI entrypoints (agent/api/routes.py)
+  └── Orchestrator service (agent/orchestration/service.py)
+        ├── ChannelHandoffManager state machine (agent/orchestration/handoff.py)
+        │     Tracks: new → email_only → warm_lead_ready_for_sms → sms_handoff_active → booked
+        ├── SQLite interaction_events (agent/storage/repository.py)
+        │     Durable event log: email_sent, email_reply_received, sms_handoff_sent,
+        │     booking_link_shared, booking_confirmed, tool_failure
+        ├── JSONL trace log (agent/data/traces.jsonl)
+        └── External tool adapters (email, SMS, Cal.com, HubSpot, Langfuse, enrichment connectors)
+```
+
+**Key orchestration invariants:**
+
+- `ChannelHandoffManager.can_send_sms()` gates all SMS on `email_reply_received`. SMS is never
+  sent on initial outreach.
+- SMS additionally requires one of: prospect asked for SMS, scheduling intent + phone on file,
+  or warm lead + scheduling-focused message (see SMS eligibility policy in `handoff.py`).
+- `calcom_client.book_preview()` is intentionally non-mutating — it generates a booking link
+  artifact only. Real bookings are created exclusively from the Cal.com webhook
+  (`POST /webhooks/calcom → handle_calendar_confirmation()`).
+- Every `ToolExecutionResult` is inspected by `_handle_tool_result()`: errors are logged to
+  the trace JSONL, written to SQLite as `tool_failure` events, and surfaced as `risk_flags`
+  so the caller can route to human review.
+- HubSpot and Langfuse calls are wrapped with `_with_retries()` (bounded, exponential backoff).
+  Email and SMS are never retried — they are not idempotent without verified idempotency keys.
+- When `handle_inbound_message` resolves `next_action="send_email"`, the reply is immediately
+  sent (or captured as a draft artifact) — `reply_draft` is never left unacted upon.
+
 ## Architecture Diagram
 
 ```mermaid
 flowchart TD
-    A[Signal intake<br/>synthetic prospect or inbound reply] --> B[FastAPI orchestrator<br/>agent.api.routes + agent.orchestration.service]
-    B --> C[Signal enrichment connectors<br/>Crunchbase, jobs, layoffs, leadership]
-    C --> D[Structured enrichment outputs<br/>prospect profile, hiring brief, competitor gap, AI maturity, bench match]
-    D --> E[Policy layer<br/>ICP abstention, confidence phrasing, bench gate, channel selection]
-    E --> F[Backbone LLM / reply drafting step<br/>policy-guided response generation]
-    F --> G[Email channel handler]
-    F --> H[SMS channel handler]
-    F --> I[Calendar handoff / Cal.com booking]
-    G --> J[HubSpot CRM writeback]
-    H --> J
-    I --> J
-    B --> K[SQLite snapshot + thread state]
-    B --> L[Observability layer<br/>JSONL traces + optional Langfuse mirror]
-    C --> L
-    E --> L
-    F --> L
-    G --> L
-    H --> L
-    I --> L
-    J --> L
+    A["Lead intake\n(POST /prospects/enrich or /pipeline/run)"]
+    B["Enrichment connectors\n(Crunchbase · jobs · layoffs · leadership)"]
+    C["Policy layer\n(ICP classifier · bench gate · abstention)"]
+    D["Initial email outreach\n(email_channel.send → email_sent event)"]
+    E["SQLite interaction_events\n(durable state per prospect_id)"]
+    F["Inbound reply\n(POST /conversations/reply\nor /webhooks/resend /webhooks/africastalking)"]
+    G["ChannelHandoffManager\nroute_inbound_message()"]
+    H{"next_action?"}
+    I["send_email\n→ email_channel.send(reply_draft)\n→ reply_email_sent event"]
+    J["book_meeting\n→ email_channel.send_booking_options()\n→ booking_link_shared event"]
+    K["SMS eligibility check\n(warm lead + scheduling + phone)"]
+    L["sms_channel.send_booking_options()\n→ sms_handoff_sent event"]
+    M["handoff_human\n→ risk_flags + needs_human=True"]
+    N["HubSpot CRM writeback\n(contact upsert · enrichment fields · activity note)\nwith bounded retry"]
+    O["Cal.com booking preview\n(booking link artifact only — non-mutating)"]
+    P["Cal.com webhook\nPOST /webhooks/calcom"]
+    Q["handle_calendar_confirmation()\n→ booking_confirmed event\n→ prospect status = booked"]
+    R["Langfuse mirror\n(optional, with bounded retry)"]
+    S["JSONL trace log\nagent/data/traces.jsonl"]
+    T["_handle_tool_result()\nlog failure → trace + SQLite tool_failure event"]
+
+    A --> B --> C --> D --> E
+    D --> N
+    D --> O
+    D --> R
+    F --> G --> H
+    H -->|send_email| I --> E
+    H -->|book_meeting| J --> E
+    J --> K -->|eligible| L --> E
+    H -->|handoff_human| M
+    I --> N
+    J --> N
+    L --> N
+    N --> T
+    O --> S
+    R --> T
+    P --> Q --> E
+    Q --> N
+    T --> S
 ```
 
 ### Data-flow notes
@@ -46,6 +99,57 @@ flowchart TD
 - Policy decisions live in [`agent/policies/`](./agent/policies) and sit between enrichment outputs and generation.
 - The reply-drafting backbone is the conversation-generation step used by the orchestrator and inbound-reply handler in [`agent/orchestration/service.py`](./agent/orchestration/service.py).
 - Channel handlers live in [`agent/channels/`](./agent/channels), CRM sync in [`agent/crm/`](./agent/crm), scheduling in [`agent/scheduling/`](./agent/scheduling), and traces in [`agent/observability/`](./agent/observability).
+
+## Tenacious Seed Materials
+
+All Tenacious-specific knowledge lives in [`docs/tenacious_sales_data/seed/`](./docs/tenacious_sales_data/seed/). The agent reads these files at startup via [`agent/seed/loader.py`](./agent/seed/loader.py) and uses them to drive every outbound decision. No real customer data is present.
+
+### Files and what they influence
+
+| File | Format | Influences |
+|---|---|---|
+| `bench_summary.json` | JSON | Bench-capacity gate. If a prospect's inferred stack shows 0 available engineers the agent routes to human review and does not pitch capacity. Updated weekly. |
+| `icp_definition.md` | MD | Segment classification labels (fixed for grading), pitch language per segment and AI-readiness tier (high ≥ 2, low 0–1), subject-line prefix per segment. |
+| `pricing_sheet.md` | MD | Pricing guardrail replies. Agent may cite the engagement minimum, extension cadence, and reference to public rate floors — but may not invent specific dollar amounts or commit to total-contract values. |
+| `style_guide.md` | MD | Style enforcement: subject ≤ 60 chars, cold email body ≤ 120 words, banned subject prefixes (Quick/Just/Hey), banned vendor clichés (top talent/world-class/rockstar). Violations add a `style_violation:*` risk flag and set `needs_human=True`. |
+| `case_studies.md` | MD | Three redacted case studies with quotable language. Agent cites only these — does not fabricate case studies or transpose outcomes to sectors not covered. Matched by segment. |
+| `email_sequences/cold.md` | MD | 4-sentence cold email structure (concrete fact → bottleneck → Tenacious fit → ask). Subject prefix per segment. Max word counts per email in the three-touch sequence. |
+| `email_sequences/warm.md` | MD | Warm-lead follow-up tone and structure reference. |
+| `email_sequences/reengagement.md` | MD | Re-engagement sequence: no "circling back" or "following up again" language. |
+| `discovery_transcripts/transcript_05_objection_heavy.md` | MD | Agent-usable phrases for offshore concern, price comparison, small-POC de-risking, and architecture boundary objections. |
+| `discovery_transcripts/transcript_01–04_*.md` | MD | Discovery call patterns by segment (loaded but not yet indexed into reply routing). |
+
+### How seed materials flow into agent behavior
+
+```
+seed_materials (singleton, loaded at startup)
+  ├── bench_capacity          → enrichment_service._load_bench_capacity()
+  │                             → BenchMatch.sufficient
+  │                             → policy_service (bench_mismatch_route_human flag)
+  │                             → handoff._bench_mismatch_reply() (does not promise capacity)
+  ├── icp_pitch               → policy_service._build_body_and_signature()
+  │                             get_pitch_language(segment, ai_maturity_score)
+  ├── email_sequence          → policy_service._build_subject()  (prefix per segment)
+  │                             get_bottleneck_sentence(segment)
+  ├── style (constraints)     → policy_service._validate_style()
+  │                             validate_email_style(subject, body)
+  │                             → style_violation:* risk flags + needs_human=True
+  ├── pricing                 → handoff._pricing_reply()
+  │                             (quotes engagement minimum + floor reference, no invented $)
+  ├── objection_patterns      → handoff._offshore_concern_reply()
+  │                             (transcript_05 agent-usable phrases only)
+  └── case_studies            → handoff._general_followup_reply()
+                                find_case_study(segment)
+                                (only cites if approved case study matches segment)
+```
+
+### Invariants
+
+- **No real customer data.** All seed files use sector-descriptor labels ("Global AdTech platform", "North American loyalty program") with client names and specific metrics redacted.
+- **Branded outputs are draft by default.** Every email artifact has `"draft": True` in its JSON payload. `ToolExecutionResult.status` is `"previewed"` unless `OUTBOUND_ENABLED=true` and provider credentials are present.
+- **Bench capacity comes from `bench_summary.json`.** The agent does not hallucinate available engineers. Stack counts are read from file each startup. A stack with 0 available engineers cannot be pitched.
+- **Case studies are never invented.** The agent cites only the three approved quotable blocks from `case_studies.md`. If a prospect asks for a reference in an uncovered sector, the reply routes to a human.
+- **Pricing numbers are never invented.** The pricing reply cites the structure from `pricing_sheet.md` (engagement minimum, extension cadence, public floor reference) and routes deeper pricing to a discovery call with the delivery lead.
 
 ## Safety And Kill Switch
 

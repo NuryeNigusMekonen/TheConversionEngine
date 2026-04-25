@@ -1,4 +1,5 @@
 import json
+from urllib.error import HTTPError
 
 from agent.config import settings
 from agent.schemas.prospect import InboundMessageRequest
@@ -12,27 +13,70 @@ class EmailWebhookError(RuntimeError):
 
 
 class EmailChannel:
+    def _http_error_detail(self, exc: HTTPError) -> str:
+        try:
+            raw = exc.read().decode("utf-8").strip()
+        except Exception:
+            return ""
+        if not raw:
+            return ""
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+        for key in ("message", "error", "detail"):
+            value = parsed.get(key)
+            if value:
+                return str(value)
+        return raw
+
+    def _sender_is_live_ready(self) -> bool:
+        provider = settings.email_provider.lower()
+        sender = (
+            settings.resend_from_email
+            if provider == "resend"
+            else settings.mailersend_from_email
+        )
+        if not sender:
+            return False
+        lowered = sender.lower()
+        return not (lowered.endswith(".local") or lowered.endswith(".example"))
+
     def status(self) -> ToolStatus:
         provider = settings.email_provider.lower()
         if provider == "resend":
-            configured = bool(settings.outbound_enabled and settings.resend_api_key)
+            configured = bool(
+                settings.outbound_enabled
+                and settings.resend_api_key
+                and self._sender_is_live_ready()
+            )
             return ToolStatus(
                 name="email",
                 label="Resend Email",
                 mode="configured" if configured else "mock",
                 configured=configured,
                 available=True,
-                details="Uses Resend only when OUTBOUND_ENABLED=true and API credentials are present; otherwise writes draft outbox artifacts.",
+                details=(
+                    "Uses Resend only when OUTBOUND_ENABLED=true, API credentials are present, "
+                    "and the sender address is a real provider-ready address; otherwise writes draft outbox artifacts."
+                ),
             )
         if provider == "mailersend":
-            configured = bool(settings.outbound_enabled and settings.mailersend_api_key)
+            configured = bool(
+                settings.outbound_enabled
+                and settings.mailersend_api_key
+                and self._sender_is_live_ready()
+            )
             return ToolStatus(
                 name="email",
                 label="MailerSend Email",
                 mode="configured" if configured else "mock",
                 configured=configured,
                 available=True,
-                details="Uses MailerSend only when OUTBOUND_ENABLED=true and API credentials are present; otherwise writes draft outbox artifacts.",
+                details=(
+                    "Uses MailerSend only when OUTBOUND_ENABLED=true, API credentials are present, "
+                    "and the sender address is a real provider-ready address; otherwise writes draft outbox artifacts."
+                ),
             )
         return ToolStatus(
             name="email",
@@ -112,6 +156,26 @@ class EmailChannel:
                     message=f"Live email submitted for delivery to {recipient}.",
                     artifact_ref=artifact_ref,
                     external_id=external_id,
+                )
+            except HTTPError as exc:
+                detail = self._http_error_detail(exc)
+                if exc.code in {401, 403}:
+                    return ToolExecutionResult(
+                        name="email",
+                        mode="mock",
+                        status="previewed",
+                        message=(
+                            "Live email provider rejected the current credentials or sender identity; "
+                            f"kept a draft artifact instead ({exc}{f': {detail}' if detail else ''})."
+                        ),
+                        artifact_ref=artifact_ref,
+                    )
+                return ToolExecutionResult(
+                    name="email",
+                    mode="configured",
+                    status="error",
+                    message=f"Live email call failed: {exc}{f': {detail}' if detail else ''}",
+                    artifact_ref=artifact_ref,
                 )
             except Exception as exc:
                 return ToolExecutionResult(

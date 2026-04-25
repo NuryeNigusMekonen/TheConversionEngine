@@ -4,6 +4,8 @@ from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+DEFAULT_USER_AGENT = "TenaciousConversionEngine/1.0 (+https://gettenacious.com)"
+
 
 class HttpError(RuntimeError):
     pass
@@ -18,7 +20,11 @@ def request_json(
     timeout: int = 20,
 ) -> tuple[int, dict[str, Any], dict[str, str]]:
     body = None
-    request_headers = {"Accept": "application/json", **(headers or {})}
+    request_headers = {
+        "Accept": "application/json",
+        "User-Agent": DEFAULT_USER_AGENT,
+        **(headers or {}),
+    }
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
         request_headers.setdefault("Content-Type", "application/json")
@@ -41,6 +47,7 @@ def request_form(
     encoded = urlencode(payload or {}).encode("utf-8")
     request_headers = {
         "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": DEFAULT_USER_AGENT,
         **(headers or {}),
     }
     request = Request(url, data=encoded, method=method.upper(), headers=request_headers)

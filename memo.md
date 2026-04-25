@@ -1,122 +1,93 @@
 # Tenacious Decision Memo
 
-*Addressed to: Tenacious CEO and CFO*
-*Prepared by: Conversion Engine build team*
-*Date: April 25, 2026*
-*Status: DRAFT — all content marked draft per data-handling policy*
-
----
+*To: Tenacious CEO and CFO*  
+*Date: April 25, 2026*  
+*Status: Draft*
 
 ## Page 1: The Decision
 
-**What was built.** An email-first automated conversion engine that researches synthetic prospects, generates hiring signal and competitor gap briefs grounded in public data (Crunchbase firmographics, job-post velocity, layoffs.fyi, leadership-change snapshots), routes outbound email through a policy layer that enforces ICP abstention and bench-gated commitments, and hands qualified leads to a human Tenacious delivery lead via Cal.com. SMS is reserved for warm-lead scheduling coordination; voice is a human-led discovery call, not an automated cold-call path. All outbound is disabled by default (`OUTBOUND_ENABLED=false`).
-
-**Headline number.** The confidence-aware abstention mechanism improved local-surrogate pass@1 from 0.41 to 0.57 (+16 pp, p = 0.018 on 100 local evaluation tasks). The τ²-Bench retail runs (Gemini 2.0 Flash, 5 tasks) returned 0.0 due to model-class mismatch with the GPT-5 reference; the admin-provided published baseline of ~42% is the grading anchor. The local surrogate mechanism lift is the primary contribution.
-
-**Recommendation.** Pilot Segment 2 (mid-market restructuring) only for 30 days. The restructuring signal (layoff event + active engineering hiring) is the most verifiable public signal, the pitch framing is concrete, and the abstention rate on ambiguous cases is highest — reducing brand-risk exposure on the first live run.
-
----
-
-**τ²-Bench pass@1 results**
-
-| Condition | pass@1 | 95% CI | Source |
-|---|---:|---|---|
-| Published reference (GPT-5) | ~0.42 | — | τ²-Bench leaderboard, Feb 2026 |
-| Day 1 local surrogate baseline | 0.41 | [0.34, 0.48] | `eval/score_log.json` |
-| Full method (local surrogate) | 0.57 | [0.50, 0.64] | `ablation_results.json` |
-| τ²-Bench actual (Gemini Flash Lite, 5 tasks) | 0.00 | — | `eval/score_log.json` (model mismatch — see baseline.md) |
-| **τ²-Bench actual (DeepSeek V3, 30 tasks)** | **0.462** | — | `eval/score_log.json` (matches admin-provided ~42% baseline) |
-
----
+We built an email-first conversion engine that enriches synthetic prospects from public signals, drafts signal-grounded outreach, enforces honesty and bench guardrails, and routes qualified conversations toward HubSpot and Cal.com with human escalation where needed. In the stored preview run, the repo records a preview cost of `$0.000178` per file-defined qualified lead and a `0%` synchronous stalled-thread rate in the synthetic trace slice against the current Tenacious manual baseline of `30–40%`. Recommendation: run a `30-day Segment 2 pilot` at `80 outbound contacts per month` with a `sub-$100 weekly budget`, and judge it on `>=7% reply rate` plus `<20% stale-qualified-reply rate`.
 
 **Cost per qualified lead**
 
-In preview mode (outbound disabled, all sends produce local artifacts): **$0.000178** per prospect from `invoice_summary.json` and `eval/score_log.json`. Live Resend + Africa's Talking sends at production scale would add approximately $0.001–$0.003 per message depending on volume tier. Target: under $5 per qualified lead (challenge grading threshold). Current cost is well below this; the binding cost at scale will be LLM inference per enrichment, estimated at $0.024–$0.026 per qualified lead from `ablation_results.json`.
+Repo inputs:
 
----
+- `llm_eval_usd_recorded = $0.003556`
+- `outbound_email_usd = $0.0`
+- `sms_usd = $0.0`
+- `qualified_leads = 20`
+
+Arithmetic:
+
+`($0.003556 + $0.0 + $0.0) / 20 = $0.0001778`
+
+Rounded preview CPL:
+
+`$0.000178`
+
+Qualification definition matters. `invoice_summary.json` uses `20` file-defined qualified leads, while `submission_run_summary.json` shows a stricter commercially advanced subset of `15` interactions (`5 book_meeting + 10 send_email`). On that stricter denominator the same preview spend is `$0.000237`. Either way, the preview cost is far below the challenge envelope.
 
 **Speed-to-lead delta**
 
-Current Tenacious manual process: 30–40% of qualified conversations stall in the first two weeks (Tenacious CFO estimate, challenge brief). The system routes every inbound reply to a scheduling intent classifier immediately on receipt; no SDR queue. Pilot success criterion: **stale qualified-reply rate below 20%** after seven days, measured from Cal.com booking lag vs. reply timestamp in `agent/data/traces.jsonl`.
+Definition used here: a `stalled thread` is a prospect reply with no recorded next action in the stored trace slice.
 
----
+- Manual baseline: `30–40%`
+- Stored system rate: `0 / 20 = 0%`
+
+Comparison:
+
+- versus midpoint baseline (`35%`): `35pp` improvement
+- versus full baseline range: `30–40pp` improvement
+
+Caveat: this is a synthetic preview run with injected replies, so it proves synchronous handling discipline, not final live-market responsiveness.
 
 **Competitive-gap outbound performance**
 
-Research-led outreach (AI maturity score + top-quartile competitor gap, gap confidence ≥ 0.60) is tagged separately in trace metadata. In the 20 local synthetic runs, 14 of 20 prospects received research-led outreach; 6 received generic exploratory email (segment confidence below threshold). Live reply-rate delta between variants is not measurable until the live pilot generates replies. Industry reference: signal-grounded outbound reaches 7–12% reply rate vs. 1–3% baseline (Clay / Smartlead case studies).
+Variant definitions from stored outbound drafts:
 
----
+- `Research-led`: body contains `One peer signal stood out:`
+- `Generic`: no competitor-gap lead language
 
-**Annualized dollar impact**
+Observed mix:
 
-| Scenario | Segments | Leads/mo | Reply rate | Discovery→Proposal | Proposal→Close | ACV | Deals/yr | Influenced ACV/yr |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
-| Conservative (Seg 2 only) | 1 | 80 | 7% | 40% | 25% | $240K | 6.7 | **$1.6M** |
-| Expected (Seg 1+2) | 2 | 160 | 9% | 42% | 28% | $320K | 17.2 | **$5.5M** |
-| Upside (all 4 segments) | 4 | 240 | 10% | 45% | 30% | $400K | 32.4 | **$13.0M** |
+- research-led `18 / 20 = 90%`
+- generic `2 / 20 = 10%`
 
-*Conversion rates from Tenacious internal (challenge brief). ACV ranges from challenge brief. Leads/month estimated from SDR capacity (60 outbound touches/week per person × 1 person). All scenarios reproducible from `ablation_results.json` × challenge brief conversion rates.*
+Observed reply rates in the stored synthetic slice:
 
----
+- research-led `18 / 18 = 100%`
+- generic `2 / 2 = 100%`
+- delta `0 percentage points`
 
-**Pilot scope recommendation**
+That is not a real outbound performance claim. The synthetic harness stores one inbound interaction per prospect, so the current codebase proves the variant mix, but not a decision-grade reply-rate lift between variants.
 
-- **Segment:** Segment 2 (mid-market restructuring) only
-- **Lead volume:** 80 outbound contacts/month (one SDR equivalent)
-- **Weekly budget:** Under $100 (LLM inference + email delivery)
-- **Success criterion:** 7%+ reply rate AND stale-qualified-reply rate below 20% after 30 days
-- **Review gate:** If wrong-signal complaints exceed 3 per 100 sends in any rolling window, pause and review enrichment pipeline before continuing
+**Pilot scope**
 
----
+- Segment: `Segment 2 — Mid-market platforms restructuring cost`
+- Lead volume: `80 outbound contacts per month`
+- Budget: `under $100 per week`
+- Thirty-day success criterion: `>=7% reply rate` on live research-led outreach and `<20% stale-qualified-reply rate`
+
+Segment 2 is the right first pilot because the public signal is the clearest in this repo: cost pressure plus active engineering demand is easier to explain honestly than a weaker AI-maturity-only story.
 
 ## Page 2: The Skeptic's Appendix
 
 **Four failure modes τ²-Bench does not capture**
 
-1. *Offshore-perception objections.* The τ²-Bench retail domain tests task completion, not brand tone. A CTO who receives "we place engineers from Addis Ababa" without context may react negatively regardless of technical correctness. The benchmark has no persona that models this objection. What would catch it: a Tenacious-specific probe corpus with defensive replies from VP Eng personas; estimated cost to add: 8–10 additional probe scripts in the probe library.
+1. `Offshore-perception objections`: a senior engineering buyer reacts badly to outsourcing language even when the facts are correct. τ²-Bench misses this because it tests task completion, not Tenacious tone under skepticism. Add Tenacious-specific objection personas scored against the style guide. Cost: `8–10` new probes plus manual review.
 
-2. *False bench promises.* The bench gate prevents commitment to zero-capacity stacks, but the bench summary updates weekly. If an engineer leaves between Monday's summary and Wednesday's outreach, the agent may reference capacity that no longer exists. The benchmark uses static data; real deployment uses a moving bench. What would catch it: intra-week bench staleness injection in the eval harness.
+2. `Bench staleness`: the weekly bench snapshot is accurate when loaded but stale by the time a live conversation happens. τ²-Bench misses this because it assumes static state. Add time-shifted bench fixtures and staleness injection. Cost: about `1 engineering day` plus fixture maintenance.
 
-3. *Competitor-gap defensiveness.* A CTO who is already aware of and deliberately chose not to build an MLOps function will react poorly to a message that implies they missed something obvious. The τ²-Bench task distribution doesn't include defensive-expert personas. Probe P29 (deliberate build/buy) addresses this but is not in the τ²-Bench retail set. What would catch it: a Tenacious-specific adversarial probe that presents a senior AI leader and measures tone drift.
+3. `Competitor-gap defensiveness`: a self-aware CTO reads a gap brief as patronizing even when the signal extraction is technically correct. τ²-Bench misses this because it has no senior technical persona grading for condescension. Add expert personas and tone-scored competitor-gap probes. Cost: `6–8` targeted probes and manual rubric review.
 
-4. *Multi-thread company leakage.* If the agent contacts both the co-founder and the VP Engineering at the same company in the same week, it must keep context isolated. The current implementation uses contact-keyed SQLite lookups, which prevents cross-contact data sharing, but does not prevent sending two different research narratives to the same company. τ²-Bench is single-thread only. This is the one unresolved probe from the library (P16, P17).
+4. `Multi-thread company leakage`: two contacts at the same company receive different research narratives in parallel. τ²-Bench misses this because it is single-threaded and does not model account-level coordination. Add company-level dedupe logic and replay tests. Cost: about `1 engineering day` plus replay fixtures.
 
----
+**Public-signal lossiness in AI maturity scoring**
 
-**Public-signal lossiness**
+False negative archetype: a quietly sophisticated but publicly silent company with real internal AI work, no public AI roles, no named AI leader, and minimal executive commentary. In this system that company scores low, gets a generic exploratory message, and may never receive the sharper specialized-capability angle it actually deserves. Business impact: a missed high-value touch on an account that may fit Tenacious well but chooses not to advertise its AI work.
 
-A *quietly sophisticated but publicly silent* company (private AI work, no public job posts, no executive talks) scores 0 in the current AI maturity model. The agent would suppress the Segment 4 pitch and send a generic exploratory email. Business impact: a missed high-value opportunity at a company that would benefit from specialized capability consulting. The system cannot fix this signal gap, but it correctly abstains rather than hallucinating readiness.
-
-A *loud but shallow* company (heavy marketing language, no actual open AI roles, no named AI leadership) may score 1–2 on keyword density alone. The policy layer's medium-weight threshold means these companies might receive an AI-maturity-grounded pitch they are not ready for. Business impact: a reputation event if the email implies readiness the CTO knows they don't have. Mitigation in the current implementation: AI score requires at least one high-weight signal (AI role or named AI leadership) to reach 2; keyword-only signals stay at 1.
-
----
-
-**Gap-analysis risks**
-
-*Deliberate non-adoption.* A company that has publicly declined to build an in-house ML function (choosing API-first AI tooling instead) may rank below peers on AI maturity but be making the correct strategic decision. Sending a message about the MLOps gap implies they made a mistake. Current mitigation: competitor-gap phrasing threshold of 0.60 and the "research finding, not a failure" tone constraint. Risk: threshold alone does not detect deliberate strategy; requires a human probe in the discovery call.
-
-*Sub-niche irrelevance.* A vertical SaaS company serving a regulated industry (healthcare, legal) may show low AI maturity because compliance constraints genuinely prevent faster adoption — not because they are behind. Applying the sector-wide top-quartile benchmark to a company with regulatory constraints is a false comparison. The current system does not detect regulatory vertical context; the competitor-gap brief would misfire for ~15% of fintech / healthtech companies in the Crunchbase sample.
-
----
-
-**Brand-reputation comparison**
-
-1,000 signal-grounded emails at 9% reply rate: 90 replies. If 5% of emails contain factually wrong signal (wrong funding date, wrong job-post count), that is 50 brand-risk events. At a conservative reputation cost of $500 per wrong-signal email (one damaged relationship at $240K ACV × 0.2% probability), the risk is $25K. Upside from 90 replies at 40% discovery conversion, 25% close, $240K ACV: 9 deals × $240K = $2.16M. The math favors sending — but only if wrong-signal rate is below 5%. Current system controls: confidence-aware phrasing, abstention below 0.60, explicit `do_not_claim` flags on missing-source matches. These push wrong-signal rate toward 1–2% in controlled synthetic runs.
-
----
+False positive archetype: a loud but shallow company with AI-heavy marketing language, some modern data-stack references, and weak evidence of a real operating AI function. In this system the agent can over-read the marketing layer and sound more certain than the evidence supports. Business impact: a CTO sees the outreach as sloppy or performative, which is exactly the kind of brand damage Tenacious cannot afford in a research-led motion.
 
 **One honest unresolved failure**
 
-Probe P16 (multi-thread company leakage). If a co-founder and VP Engineering at the same company are in simultaneous email threads, the system will produce two independent research briefs. The briefs will not contradict each other (both draw from the same snapshot data), but the two contacts will receive different pitch framings on the same day. A sophisticated recipient who compares notes will notice. Impact: moderate brand-credibility risk. The fix requires a company-level deduplication layer that throttles outreach to one contact per company per rolling 14-day window. This is a one-day engineering task not yet implemented.
-
----
-
-**Kill-switch clause**
-
-Pause the system if **any** of the following trigger:
-
-1. Wrong-signal complaint rate exceeds 3% of sent messages in any rolling 100-message window (source: reply-classification tag in trace log).
-2. A bench-overcommitment incident is confirmed by the delivery team (agent promised a stack Tenacious could not staff).
-3. τ²-Bench retail pass@1 on the program-pinned model drops below 0.35 on a re-run (regression indicator).
-
-Rollback: set `OUTBOUND_ENABLED=false`, archive current `agent/data/` to a timestamped directory, and notify the delivery lead before resuming.
+The cleanest unresolved failure from the probe library is `multi-thread leakage`: two contacts at the same company can still receive different outreach framings inside the same week because the current mechanism is contact-scoped, not company-scoped. Trigger condition: simultaneous outreach to a founder and a VP Engineering at one account with no deduplication layer. Business impact: even if both notes are individually grounded, one sophisticated account comparing screenshots can conclude the system is inconsistent, putting a `$240,000` floor outsourcing opportunity at avoidable brand risk.

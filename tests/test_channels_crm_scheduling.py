@@ -5,6 +5,9 @@ in .env.example defaults; live sends require explicit OUTBOUND_ENABLED=true).
 """
 
 import json
+from io import BytesIO
+from types import SimpleNamespace
+from urllib.error import HTTPError
 
 from agent.channels.email import EmailChannel
 from agent.channels.sms import SmsChannel
@@ -75,6 +78,46 @@ def test_email_status_always_available() -> None:
     assert status.mode in ("mock", "configured")
 
 
+def test_email_falls_back_to_preview_when_provider_rejects_sender(monkeypatch) -> None:
+    channel = EmailChannel()
+    monkeypatch.setattr(
+        "agent.channels.email.settings",
+        SimpleNamespace(
+            outbox_dir=settings.outbox_dir,
+            outbound_enabled=True,
+            email_provider="resend",
+            resend_api_key="live-key",
+            resend_from_email="sender@tenacious.com",
+            resend_reply_to="",
+            mailersend_api_key="",
+            mailersend_from_email="sender@tenacious.com",
+            mailersend_from_name="Tenacious",
+        ),
+    )
+
+    def raise_http_error(*args, **kwargs):
+        raise HTTPError(
+            url="https://api.resend.com/emails",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=BytesIO(b'{"message":"The from address does not match a verified domain."}'),
+        )
+
+    monkeypatch.setattr("agent.channels.email.request_json", raise_http_error)
+
+    result = channel.send(
+        recipient="amara@clearmint.io",
+        subject="Booking options for ClearMint",
+        body="Draft body",
+        prospect_id="pros_ch_email_004",
+    )
+
+    assert result.status == "previewed"
+    assert "rejected the current credentials or sender identity" in result.message
+    assert "verified domain" in result.message
+
+
 # ---------------------------------------------------------------------------
 # SMS channel — warm-lead coordination only
 # ---------------------------------------------------------------------------
@@ -122,6 +165,42 @@ def test_sms_status_always_available() -> None:
     status = channel.status()
     assert status.name == "sms"
     assert status.available is True
+
+
+def test_sms_falls_back_to_preview_when_provider_rejects_credentials(monkeypatch) -> None:
+    channel = SmsChannel()
+    monkeypatch.setattr(
+        "agent.channels.sms.settings",
+        SimpleNamespace(
+            outbox_dir=settings.outbox_dir,
+            outbound_enabled=True,
+            sms_provider="africastalking",
+            africas_talking_username="sandbox",
+            africas_talking_api_key="live-key",
+            africas_talking_sender_id="TENACIOUS",
+        ),
+    )
+
+    def raise_http_error(*args, **kwargs):
+        raise HTTPError(
+            url="https://api.africastalking.com/version1/messaging",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr("agent.channels.sms.request_form", raise_http_error)
+
+    result = channel.send(
+        phone_number="+254700000000",
+        body="Warm lead link",
+        prospect_id="pros_ch_sms_004",
+        allow_warm_lead=True,
+    )
+
+    assert result.status == "previewed"
+    assert "rejected the current credentials or sender identity" in result.message
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +266,64 @@ def test_hubspot_status_reports_mode() -> None:
     assert status.name == "hubspot"
     assert status.mode in ("mock", "configured")
     assert status.available is True
+
+
+def test_hubspot_enrichment_write_skips_unknown_custom_properties(monkeypatch) -> None:
+    client = HubSpotClient()
+    monkeypatch.setattr(
+        "agent.crm.hubspot.settings",
+        SimpleNamespace(
+            outbox_dir=settings.outbox_dir,
+            hubspot_access_token="token",
+            hubspot_base_url="https://api.hubapi.com",
+        ),
+    )
+    monkeypatch.setattr(client, "_get_contact_property_names", lambda: {"email", "firstname"})
+
+    result = client.write_enrichment_fields(
+        "123",
+        {"tenacious_segment": "mid_market_restructuring"},
+        "pros_ch_hs_004",
+    )
+
+    assert result.status == "previewed"
+    assert "no matching custom enrichment properties were available" in result.message
+
+
+def test_hubspot_activity_note_includes_required_timestamp(monkeypatch) -> None:
+    client = HubSpotClient()
+    monkeypatch.setattr(
+        "agent.crm.hubspot.settings",
+        SimpleNamespace(
+            outbox_dir=settings.outbox_dir,
+            hubspot_access_token="token",
+            hubspot_base_url="https://api.hubapi.com",
+        ),
+    )
+
+    captured = {}
+
+    def fake_request_json(method, url, *, headers=None, payload=None, timeout=20):
+        captured["method"] = method
+        captured["url"] = url
+        captured["payload"] = payload
+        return 201, {"id": "note-1"}, {}
+
+    monkeypatch.setattr("agent.crm.hubspot.request_json", fake_request_json)
+
+    result = client.log_activity(
+        "123",
+        activity_type="email_reply_received",
+        activity_summary="Inbound email reply processed.",
+        prospect_id="pros_ch_hs_005",
+        metadata={"channel_state": "email_replied"},
+    )
+
+    assert result.status == "executed"
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/crm/v3/objects/notes")
+    assert captured["payload"]["properties"]["hs_timestamp"]
+    assert captured["payload"]["properties"]["hs_note_body"]
 
 
 # ---------------------------------------------------------------------------

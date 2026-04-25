@@ -16,16 +16,47 @@ class Settings:
     outbox_dir: Path = data_dir / "outbox"
     snapshots_dir: Path = data_dir / "snapshots"
     webhook_dir: Path = data_dir / "webhooks"
-    seed_dir: Path = project_root / "docs" / "tenacious_sales_data" / "tenacious_sales_data" / "seed"
+    seed_dir: Path = project_root / "docs" / "tenacious_sales_data" / "seed"
     bench_summary_path: Path = Path(
         os.getenv(
             "BENCH_SUMMARY_PATH",
-            project_root
-            / "docs"
-            / "tenacious_sales_data"
-            / "tenacious_sales_data"
-            / "seed"
-            / "bench_summary.json",
+            project_root / "docs" / "tenacious_sales_data" / "seed" / "bench_summary.json",
+        )
+    )
+    icp_definition_path: Path = Path(
+        os.getenv(
+            "ICP_DEFINITION_PATH",
+            project_root / "docs" / "tenacious_sales_data" / "seed" / "icp_definition.md",
+        )
+    )
+    pricing_sheet_path: Path = Path(
+        os.getenv(
+            "PRICING_SHEET_PATH",
+            project_root / "docs" / "tenacious_sales_data" / "seed" / "pricing_sheet.md",
+        )
+    )
+    style_guide_path: Path = Path(
+        os.getenv(
+            "STYLE_GUIDE_PATH",
+            project_root / "docs" / "tenacious_sales_data" / "seed" / "style_guide.md",
+        )
+    )
+    case_studies_path: Path = Path(
+        os.getenv(
+            "CASE_STUDIES_PATH",
+            project_root / "docs" / "tenacious_sales_data" / "seed" / "case_studies.md",
+        )
+    )
+    email_sequences_dir: Path = Path(
+        os.getenv(
+            "EMAIL_SEQUENCES_DIR",
+            project_root / "docs" / "tenacious_sales_data" / "seed" / "email_sequences",
+        )
+    )
+    discovery_transcripts_dir: Path = Path(
+        os.getenv(
+            "DISCOVERY_TRANSCRIPTS_DIR",
+            project_root / "docs" / "tenacious_sales_data" / "seed" / "discovery_transcripts",
         )
     )
     outbound_enabled: bool = os.getenv("OUTBOUND_ENABLED", "").lower() in {"1", "true", "yes"}

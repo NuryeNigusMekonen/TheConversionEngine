@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from urllib.error import HTTPError
 
 from agent.config import settings
 from agent.schemas.tools import ToolExecutionResult, ToolStatus
@@ -7,6 +8,9 @@ from agent.utils.http import request_json
 
 
 class HubSpotMCPClient:
+    def __init__(self) -> None:
+        self._contact_property_names: set[str] | None = None
+
     def status(self) -> ToolStatus:
         configured = bool(settings.hubspot_access_token)
         return ToolStatus(
@@ -47,6 +51,83 @@ class HubSpotMCPClient:
             "tenacious_last_reply_next_action": payload.get("last_reply_next_action"),
             "tenacious_trace_id": payload.get("trace_id"),
             "tenacious_booking_status": payload.get("booking_status"),
+        }
+
+    def _get_contact_property_names(self) -> set[str]:
+        if self._contact_property_names is not None:
+            return self._contact_property_names
+        _, response, _ = request_json(
+            "GET",
+            f"{settings.hubspot_base_url}/crm/v3/properties/contacts",
+            headers={
+                "Authorization": f"Bearer {settings.hubspot_access_token}",
+            },
+        )
+        self._contact_property_names = {
+            item.get("name")
+            for item in response.get("results", [])
+            if item.get("name")
+        }
+        return self._contact_property_names
+
+    def _supported_enrichment_properties(self, enrichment_fields: dict[str, object]) -> tuple[dict[str, object], list[str]]:
+        filtered = {
+            key: value
+            for key, value in enrichment_fields.items()
+            if value is not None
+        }
+        property_names = self._get_contact_property_names()
+        supported = {
+            key: value
+            for key, value in filtered.items()
+            if key in property_names
+        }
+        unsupported = sorted(key for key in filtered if key not in supported)
+        return supported, unsupported
+
+    def _summarize_metadata(self, metadata: dict | None) -> dict:
+        metadata = metadata or {}
+        side_effects = metadata.get("side_effects")
+        summarized_side_effects = []
+        if isinstance(side_effects, list):
+            for item in side_effects[:5]:
+                if isinstance(item, dict):
+                    summarized_side_effects.append(
+                        {
+                            "name": item.get("name"),
+                            "status": item.get("status"),
+                            "message": item.get("message"),
+                        }
+                    )
+        summary = {
+            "risk_flags": metadata.get("risk_flags"),
+            "channel_state": metadata.get("channel_state"),
+            "side_effects": summarized_side_effects or None,
+        }
+        return {key: value for key, value in summary.items() if value not in (None, [], {})}
+
+    def _build_note_body(self, activity_type: str, activity_summary: str, metadata: dict | None) -> str:
+        metadata_json = json.dumps(self._summarize_metadata(metadata), sort_keys=True)
+        note_body = f"[{activity_type}] {activity_summary}\n\nmetadata={metadata_json}"
+        if len(note_body) > 4000:
+            note_body = f"[{activity_type}] {activity_summary}\n\nmetadata={metadata_json[:3800]}..."
+        return note_body
+
+    def _build_note_properties(
+        self,
+        *,
+        activity_type: str,
+        activity_summary: str,
+        metadata: dict | None,
+        logged_at: str,
+    ) -> dict[str, str]:
+        return {
+            "hs_timestamp": logged_at,
+            "hs_note_body": self._build_note_body(
+                activity_type,
+                activity_summary,
+                metadata,
+            ),
         }
 
     def _find_contact(self, email: str) -> str | None:
@@ -146,13 +227,26 @@ class HubSpotMCPClient:
         status = self.status()
         if status.configured and contact_id:
             try:
+                supported_fields, unsupported_fields = self._supported_enrichment_properties(enrichment_fields)
+                if not supported_fields:
+                    return ToolExecutionResult(
+                        name="hubspot",
+                        mode="mock",
+                        status="previewed",
+                        message=(
+                            "HubSpot contact sync is live, but no matching custom enrichment properties "
+                            f"were available on the portal. Skipped remote write for: {', '.join(unsupported_fields) or 'none'}."
+                        ),
+                        artifact_ref=artifact_ref,
+                        external_id=contact_id,
+                    )
                 request_json(
                     "PATCH",
                     f"{settings.hubspot_base_url}/crm/v3/objects/contacts/{contact_id}",
                     headers={
                         "Authorization": f"Bearer {settings.hubspot_access_token}",
                     },
-                    payload={"properties": enrichment_fields},
+                    payload={"properties": supported_fields},
                 )
                 return ToolExecutionResult(
                     name="hubspot",
@@ -161,6 +255,26 @@ class HubSpotMCPClient:
                     message="HubSpot MCP enrichment fields written successfully.",
                     artifact_ref=artifact_ref,
                     external_id=contact_id,
+                )
+            except HTTPError as exc:
+                if exc.code == 400:
+                    return ToolExecutionResult(
+                        name="hubspot",
+                        mode="mock",
+                        status="previewed",
+                        message=(
+                            "HubSpot rejected the enrichment-property payload for this portal; "
+                            f"kept the enrichment artifact locally instead ({exc})."
+                        ),
+                        artifact_ref=artifact_ref,
+                        external_id=contact_id,
+                    )
+                return ToolExecutionResult(
+                    name="hubspot",
+                    mode="configured",
+                    status="error",
+                    message=f"HubSpot MCP enrichment write failed: {exc}",
+                    artifact_ref=artifact_ref,
                 )
             except Exception as exc:
                 return ToolExecutionResult(
@@ -208,12 +322,12 @@ class HubSpotMCPClient:
                         "Authorization": f"Bearer {settings.hubspot_access_token}",
                     },
                     payload={
-                        "properties": {
-                            "hs_note_body": (
-                                f"[{activity_type}] {activity_summary}\n\n"
-                                f"metadata={json.dumps(metadata or {}, sort_keys=True)}"
-                            ),
-                        },
+                        "properties": self._build_note_properties(
+                            activity_type=activity_type,
+                            activity_summary=activity_summary,
+                            metadata=metadata,
+                            logged_at=artifact_payload["logged_at"],
+                        ),
                         "associations": [
                             {
                                 "to": {"id": contact_id},
@@ -234,6 +348,26 @@ class HubSpotMCPClient:
                     message="HubSpot MCP activity logged successfully.",
                     artifact_ref=artifact_ref,
                     external_id=contact_id,
+                )
+            except HTTPError as exc:
+                if exc.code == 400:
+                    return ToolExecutionResult(
+                        name="hubspot",
+                        mode="mock",
+                        status="previewed",
+                        message=(
+                            "HubSpot rejected the activity-note payload for this portal; "
+                            f"kept the activity artifact locally instead ({exc})."
+                        ),
+                        artifact_ref=artifact_ref,
+                        external_id=contact_id,
+                    )
+                return ToolExecutionResult(
+                    name="hubspot",
+                    mode="configured",
+                    status="error",
+                    message=f"HubSpot MCP activity log failed: {exc}",
+                    artifact_ref=artifact_ref,
                 )
             except Exception as exc:
                 return ToolExecutionResult(

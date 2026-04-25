@@ -19,3 +19,4 @@ agent/data/submission_run_summary.json
 eval/tau2-bench
 docs/
 uv.lock
+/memo.pdf

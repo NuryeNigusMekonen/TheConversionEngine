@@ -4,7 +4,37 @@ from agent.schemas.briefs import ProspectEnrichmentResponse
 from agent.schemas.conversation import ConversationDecision
 from agent.schemas.prospect import InboundMessageRequest
 from agent.schemas.tools import ToolExecutionResult
+from agent.seed.loader import seed_materials
 from agent.storage.repository import ProspectRepository
+
+# ---------------------------------------------------------------------------
+# SMS eligibility policy
+# ---------------------------------------------------------------------------
+# SMS is only used when AT LEAST ONE of the following conditions is true:
+#   1. The prospect explicitly asks to be contacted via SMS/text/WhatsApp/phone.
+#   2. The prospect requests fast scheduling AND a phone number is on file.
+#   3. The conversation is already warm (email_reply_received recorded) AND
+#      the current message is scheduling-focused.
+#
+# SMS is never sent on initial outreach (no email_reply_received → can_send_sms=False).
+# SMS is never sent just because an email reply exists; scheduling intent is required.
+# ---------------------------------------------------------------------------
+
+_SMS_OPT_IN_TOKENS = ("sms", "text me", "whatsapp", "call me", "phone me")
+_SCHEDULING_TOKENS = ("call", "calendar", "meet", "meeting", "schedule", "next week", "tomorrow", "book")
+
+# ---------------------------------------------------------------------------
+# Pricing objection tokens — match before checking for scheduling intent
+# ---------------------------------------------------------------------------
+_PRICING_TOKENS = ("price", "pricing", "cost", "rate", "budget", "how much", "cheaper", "expensive")
+
+# ---------------------------------------------------------------------------
+# Offshore concern tokens — triggers transcript-grounded response
+# ---------------------------------------------------------------------------
+_OFFSHORE_CONCERN_TOKENS = (
+    "offshore", "outsource", "india", "eastern europe", "quality concerns",
+    "rotation", "vendor", "timezone", "time zone",
+)
 
 
 class ChannelHandoffManager:
@@ -25,7 +55,137 @@ class ChannelHandoffManager:
         return "new"
 
     def can_send_sms(self, prospect_id: str) -> bool:
+        """Base gate: returns True only if the prospect has already replied via email."""
         return self.repository.has_interaction_event(prospect_id, "email_reply_received")
+
+    def _sms_eligible(
+        self,
+        prospect_id: str,
+        message_body: str,
+        *,
+        has_phone: bool,
+        scheduling_intent: bool,
+    ) -> tuple[bool, str]:
+        """Full eligibility check for outbound SMS per the SMS eligibility policy above.
+
+        Returns (eligible: bool, reason: str).
+        """
+        if any(token in message_body for token in _SMS_OPT_IN_TOKENS):
+            return True, "prospect_asked_for_sms"
+        if scheduling_intent and has_phone:
+            return True, "scheduling_intent_with_phone_on_file"
+        if self.can_send_sms(prospect_id) and scheduling_intent:
+            return True, "warm_lead_scheduling_focused"
+        return False, "sms_gate_not_met"
+
+    # ------------------------------------------------------------------
+    # Reply builders (seed-grounded)
+    # ------------------------------------------------------------------
+
+    def _pricing_reply(self, contact_name: str | None) -> str:
+        """Build a pricing objection reply grounded in pricing_sheet.md.
+
+        Quotes the engagement minimum and starter floor from the seed file.
+        Routes deeper pricing to a human. Does NOT invent specific total-contract values.
+        Per pricing_sheet.md: 'Do not negotiate, do not offer discounts, do not commit
+        to specific total contract values.'
+        """
+        p = seed_materials.pricing
+        name = contact_name or "there"
+        return (
+            f"Hi {name},\n\n"
+            f"{p.quotable_talent_floor}\n\n"
+            f"For fixed-scope project work: {p.quotable_project_floor}\n\n"
+            f"{p.engagement_minimum} {p.extension_cadence}\n\n"
+            "A more specific number depends on scope and stack mix — "
+            "I should not commit to one without a scoping conversation. "
+            "I can book 15 minutes with a delivery lead who can walk you through the right package.\n\n"
+            "Best,\nTenacious research workflow\nTenacious Intelligence Corporation\ngettenacious.com"
+        )
+
+    def _offshore_concern_reply(self, contact_name: str | None) -> str:
+        """Build an offshore-concern objection reply grounded in transcript_05.
+
+        Uses agent-usable phrases from the objection-heavy discovery transcript.
+        Does NOT use banned phrases: 'We're not like other offshore vendors',
+        'Guaranteed 40% cost savings', 'We can handle any stack'.
+        """
+        op = seed_materials.objection_patterns
+        name = contact_name or "there"
+        return (
+            f"Hi {name},\n\n"
+            f"{op.offshore_concern}\n\n"
+            "Named-engineer stability (not a rotating pool), direct technical access "
+            "without management layers, and a three-to-five hour overlap window with "
+            "US time zones are the practical mechanisms.\n\n"
+            f"{op.architecture_boundary}\n\n"
+            "Worth 15 minutes to test whether the model fits your team's working style?\n\n"
+            "Best,\nTenacious research workflow\nTenacious Intelligence Corporation\ngettenacious.com"
+        )
+
+    def _general_followup_reply(self, snapshot: ProspectEnrichmentResponse) -> str:
+        """Build a follow-up reply grounded in discovery transcript patterns.
+
+        Asks a clarifying question rather than asserting a conclusion.
+        Optionally references an approved case study if one matches the segment.
+        """
+        name = snapshot.prospect.contact_name or "there"
+        segment = snapshot.prospect.primary_segment
+
+        # Only cite a case study if one exists in the approved seed materials
+        case_note = ""
+        matched_case = seed_materials.find_case_study(segment)
+        if matched_case:
+            case_note = (
+                f"\n\nFor context: {matched_case.quotable} "
+                "Happy to share more detail on the discovery call."
+            )
+
+        return (
+            f"Hi {name},\n\n"
+            "Thanks for the context. The useful next step is to verify whether the "
+            "public signal I found matches your actual constraint — recruiting velocity, "
+            "a specific AI/data capability, or cost structure.\n\n"
+            f"Which of those is closest?{case_note}\n\n"
+            "Best,\nTenacious research workflow\nTenacious Intelligence Corporation\ngettenacious.com"
+        )
+
+    def _bench_mismatch_reply(self, snapshot: ProspectEnrichmentResponse) -> str:
+        """Build a bench-mismatch reply. Does not over-promise capacity.
+
+        Per bench_summary.json honesty constraint: 'If a prospect's stated need
+        exceeds the available_engineers count for the required stack, the agent must
+        flag the mismatch and route to a human.'
+        """
+        name = snapshot.prospect.contact_name or "there"
+        # Identify which required stacks caused the mismatch, if readable
+        required = snapshot.hiring_signal_brief.bench_match.required_stacks
+        available = snapshot.hiring_signal_brief.bench_match.available_capacity
+        gap_stacks = [s for s in required if available.get(s, 0) == 0]
+
+        if gap_stacks:
+            gap_note = (
+                f"The public signal suggests a need for {', '.join(gap_stacks)} capacity. "
+                "Our delivery lead can confirm whether current bench availability fits "
+                "before I make any commitment."
+            )
+        else:
+            gap_note = (
+                "The delivery lead will verify current bench availability "
+                "before any capacity is committed."
+            )
+
+        return (
+            f"Hi {name},\n\n"
+            f"{gap_note}\n\n"
+            "I want to route this to a human review rather than committing to capacity "
+            "the bench may not currently show. Expect a follow-up from the delivery lead.\n\n"
+            "Best,\nTenacious research workflow\nTenacious Intelligence Corporation\ngettenacious.com"
+        )
+
+    # ------------------------------------------------------------------
+    # Warm SMS handoff
+    # ------------------------------------------------------------------
 
     def prepare_warm_sms_handoff(
         self,
@@ -61,6 +221,10 @@ class ChannelHandoffManager:
             )
         return sms_result
 
+    # ------------------------------------------------------------------
+    # Main routing
+    # ------------------------------------------------------------------
+
     def route_inbound_message(
         self,
         snapshot: ProspectEnrichmentResponse,
@@ -73,22 +237,25 @@ class ChannelHandoffManager:
         channel = "email"
         reply = ""
 
+        # ---- Opt-out ------------------------------------------------
         if any(token in body for token in ("stop", "unsubscribe", "unsub")):
             next_action = "handoff_human"
             channel = "human"
             risk_flags.append("opt_out")
             reply = "Understood. I will stop this thread here."
-        elif any(token in body for token in ("price", "pricing", "cost", "rate", "budget")):
+
+        # ---- Pricing objection (seed-grounded, no invented numbers) --
+        elif any(token in body for token in _PRICING_TOKENS):
             risk_flags.append("pricing_guardrail")
-            reply = (
-                f"Hi {snapshot.prospect.contact_name or 'there'},\n\n"
-                "For managed engineering capacity, Tenacious quotes public monthly bands by role and seniority. "
-                "For fixed-scope AI or data work, starter projects begin at the public project floor in our pricing sheet.\n\n"
-                "A specific number depends on scope and stack mix, so I should not invent one here. "
-                "Open to a 15-minute scoping call with a delivery lead?\n\n"
-                "Best,\nTenacious research workflow"
-            )
-        elif any(token in body for token in ("call", "calendar", "meet", "meeting", "next week", "tomorrow")):
+            reply = self._pricing_reply(snapshot.prospect.contact_name)
+
+        # ---- Offshore concern (transcript-grounded) -------------------
+        elif any(token in body for token in _OFFSHORE_CONCERN_TOKENS):
+            risk_flags.append("offshore_concern")
+            reply = self._offshore_concern_reply(snapshot.prospect.contact_name)
+
+        # ---- Scheduling intent (book_meeting) ------------------------
+        elif any(token in body for token in _SCHEDULING_TOKENS):
             next_action = "book_meeting"
             channel = "calendar"
             email_result, reply = email_channel.send_booking_options(
@@ -99,33 +266,36 @@ class ChannelHandoffManager:
                 contact_email=snapshot.prospect.contact_email,
             )
             side_effects.append(email_result)
-            sms_result = self.prepare_warm_sms_handoff(
-                snapshot,
-                include_booking_link=True,
-            )
-            side_effects.append(sms_result)
             if email_result.status == "error":
                 risk_flags.append("email_booking_send_failed")
-            if sms_result.status == "skipped":
-                risk_flags.append("sms_warm_lead_gate_blocked")
-            if sms_result.status == "error":
-                risk_flags.append("sms_handoff_failed")
+
+            # SMS is only sent when eligibility criteria are met (see policy at top of file).
+            sms_eligible, sms_reason = self._sms_eligible(
+                snapshot.prospect.prospect_id,
+                body,
+                has_phone=bool(snapshot.prospect.contact_phone),
+                scheduling_intent=True,
+            )
+            if sms_eligible:
+                sms_result = self.prepare_warm_sms_handoff(snapshot, include_booking_link=True)
+                side_effects.append(sms_result)
+                if sms_result.status == "skipped":
+                    risk_flags.append("sms_warm_lead_gate_blocked")
+                elif sms_result.status == "error":
+                    risk_flags.append("sms_handoff_failed")
+            else:
+                risk_flags.append(f"sms_skipped:{sms_reason}")
+
+        # ---- Bench mismatch → human review (bench_summary.json gate) -
         elif not snapshot.hiring_signal_brief.bench_match.sufficient:
             next_action = "handoff_human"
             channel = "human"
             risk_flags.append("bench_mismatch_route_human")
-            reply = (
-                "This prospect's inferred stack does not fully match visible bench capacity. "
-                "Human review is required before promising staffing."
-            )
+            reply = self._bench_mismatch_reply(snapshot)
+
+        # ---- General follow-up (case study if approved, else generic) -
         else:
-            reply = (
-                f"Hi {snapshot.prospect.contact_name or 'there'},\n\n"
-                "Thanks for the context. The useful next step is to verify whether the public signal matches your actual constraint: "
-                "recruiting velocity, a specific AI/data capability, or cost structure.\n\n"
-                "Which of those is closest?\n\n"
-                "Best,\nTenacious research workflow"
-            )
+            reply = self._general_followup_reply(snapshot)
 
         decision = ConversationDecision(
             next_action=next_action,
@@ -133,6 +303,6 @@ class ChannelHandoffManager:
             reply_draft=reply,
             needs_human=channel == "human",
             risk_flags=risk_flags,
-            trace_tags=["inbound_reply", "channel_handoff_state_machine"],
+            trace_tags=["inbound_reply", "channel_handoff_state_machine", "seed_grounded"],
         )
         return decision, side_effects

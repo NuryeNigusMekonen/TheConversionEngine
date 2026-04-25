@@ -1,4 +1,5 @@
 import json
+from urllib.error import HTTPError
 
 from agent.config import settings
 from agent.schemas.prospect import InboundMessageRequest
@@ -88,6 +89,25 @@ class SmsChannel:
                     message="Live SMS request submitted to Africa's Talking.",
                     artifact_ref=artifact_ref,
                     external_id=response_text[:120],
+                )
+            except HTTPError as exc:
+                if exc.code in {401, 403}:
+                    return ToolExecutionResult(
+                        name="sms",
+                        mode="mock",
+                        status="previewed",
+                        message=(
+                            "Live SMS provider rejected the current credentials or sender identity; "
+                            f"kept a warm-lead preview artifact instead ({exc})."
+                        ),
+                        artifact_ref=artifact_ref,
+                    )
+                return ToolExecutionResult(
+                    name="sms",
+                    mode="configured",
+                    status="error",
+                    message=f"Live SMS call failed: {exc}",
+                    artifact_ref=artifact_ref,
                 )
             except Exception as exc:
                 return ToolExecutionResult(

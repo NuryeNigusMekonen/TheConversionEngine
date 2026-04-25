@@ -4,7 +4,6 @@ from urllib.parse import urlencode
 
 from agent.config import settings
 from agent.schemas.tools import ToolExecutionResult, ToolStatus
-from agent.utils.http import request_json
 
 
 class CalComWebhookError(RuntimeError):
@@ -71,6 +70,16 @@ class CalComClient:
         return booking_link, artifact_ref
 
     def book_preview(self, company_name: str, contact_email: str | None, prospect_id: str) -> ToolExecutionResult:
+        """Generate a scheduling preview artifact and booking link for the outbound pipeline.
+
+        This method is intentionally non-mutating. It never creates a real Cal.com booking.
+        Real bookings are confirmed only when the Cal.com webhook fires (booking.created /
+        booking.rescheduled) and reaches POST /webhooks/calcom → handle_confirmation_webhook().
+
+        The prospect receives the booking_link and self-selects a slot. Only after that
+        webhook confirmation does the orchestrator call handle_calendar_confirmation() and
+        mark the prospect as "booked" in SQLite.
+        """
         booking_link, artifact_ref = self.generate_booking_link(
             company_name=company_name,
             contact_email=contact_email,
@@ -78,77 +87,14 @@ class CalComClient:
             source_channel="calendar",
         )
         status = self.status()
-        if status.configured and contact_email:
-            try:
-                start_window = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=1)
-                end_window = start_window + timedelta(days=7)
-                slots_url = (
-                    f"{settings.calcom_api_base}/v1/slots"
-                    f"?apiKey={settings.calcom_api_key}"
-                    f"&eventTypeId={settings.calcom_event_type_id}"
-                    f"&startTime={start_window.isoformat()}"
-                    f"&endTime={end_window.isoformat()}"
-                    f"&timeZone={settings.calcom_default_timezone}"
-                )
-                _, slots_response, _ = request_json("GET", slots_url)
-                slots = slots_response.get("slots", {})
-                first_slot = None
-                for day_slots in slots.values():
-                    if day_slots:
-                        first_slot = day_slots[0].get("time")
-                        break
-                if not first_slot:
-                    return ToolExecutionResult(
-                        name="calcom",
-                        mode="configured",
-                        status="skipped",
-                        message="No available Cal.com slots were returned for the configured event type.",
-                        artifact_ref=artifact_ref,
-                    )
-                _, booking_response, _ = request_json(
-                    "POST",
-                    f"{settings.calcom_api_base}/v2/bookings",
-                    headers={
-                        "Authorization": f"Bearer {settings.calcom_api_key}",
-                        "cal-api-version": settings.calcom_api_version,
-                    },
-                    payload={
-                        "start": first_slot,
-                        "eventTypeId": int(settings.calcom_event_type_id),
-                        "attendee": {
-                            "name": company_name,
-                            "email": contact_email,
-                            "timeZone": settings.calcom_default_timezone,
-                            "language": "en",
-                        },
-                        "metadata": {
-                            "source": "conversion-engine",
-                            "company_name": company_name,
-                        },
-                    },
-                )
-                booking_data = booking_response.get("data", {})
-                return ToolExecutionResult(
-                    name="calcom",
-                    mode="configured",
-                    status="executed",
-                    message="Cal.com booking created successfully.",
-                    artifact_ref=artifact_ref,
-                    external_id=str(booking_data.get("uid") or booking_data.get("id")),
-                )
-            except Exception as exc:
-                return ToolExecutionResult(
-                    name="calcom",
-                    mode="configured",
-                    status="error",
-                    message=f"Cal.com booking failed: {exc}",
-                    artifact_ref=artifact_ref,
-                )
         return ToolExecutionResult(
             name="calcom",
             mode=status.mode,
-            status="executed" if status.configured else "previewed",
-            message=f"Scheduling preview generated with two candidate discovery-call slots and booking link {booking_link}.",
+            status="previewed",
+            message=(
+                f"Scheduling preview generated. Booking link: {booking_link}. "
+                "Real bookings are created only from Cal.com webhook confirmation."
+            ),
             artifact_ref=artifact_ref,
         )
 

@@ -1,3 +1,8 @@
+import logging
+import time
+from collections.abc import Callable
+from typing import TypeVar
+
 from agent.channels.email import email_channel
 from agent.channels.sms import sms_channel
 from agent.config import settings
@@ -18,9 +23,42 @@ from agent.schemas.briefs import ProspectEnrichmentResponse
 from agent.schemas.conversation import ConversationDecision
 from agent.schemas.dashboard import DashboardStateResponse, RecentTrace
 from agent.schemas.prospect import InboundMessageRequest, LeadIntakeRequest, ProspectRecord
-from agent.schemas.tools import ToolStatus, ToolchainReport
+from agent.schemas.tools import ToolExecutionResult, ToolStatus, ToolchainReport
 from agent.scheduling.calcom import calcom_client
 from agent.storage.repository import ProspectRepository
+
+logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+def _with_retries(
+    fn: Callable[[], _T],
+    *,
+    max_attempts: int = 3,
+    delay_secs: float = 0.5,
+) -> _T:
+    """Bounded exponential-backoff retry for safe idempotent tool calls.
+
+    Use only for idempotent operations (HubSpot contact upsert, Langfuse mirror).
+    Never use for email or SMS sends — those are not idempotent without verified
+    idempotency keys and a retry would result in duplicate outbound messages.
+
+    A result is considered failed when it is a ToolExecutionResult with status="error",
+    or a list where any element has status="error".
+    """
+    last: _T | None = None
+    for attempt in range(max_attempts):
+        last = fn()
+        failed = (
+            any(r.status == "error" for r in last)  # type: ignore[union-attr]
+            if isinstance(last, list)
+            else (isinstance(last, ToolExecutionResult) and last.status == "error")
+        )
+        if not failed or attempt == max_attempts - 1:
+            return last  # type: ignore[return-value]
+        time.sleep(delay_secs * (2**attempt))
+    return last  # type: ignore[return-value]
 
 
 class Orchestrator:
@@ -28,6 +66,66 @@ class Orchestrator:
         self.repository = ProspectRepository()
         self.trace_logger = TraceLogger()
         self.handoff_manager = ChannelHandoffManager(self.repository)
+
+    # ------------------------------------------------------------------
+    # Tool failure handling
+    # ------------------------------------------------------------------
+
+    def _handle_tool_result(
+        self,
+        result: ToolExecutionResult | list[ToolExecutionResult],
+        prospect_id: str,
+        context: str,
+        *,
+        critical: bool = False,
+    ) -> bool:
+        """Inspect result(s), log failures to trace JSONL and SQLite.
+
+        Returns True when all results are healthy (executed/previewed/skipped).
+        Returns False when any result has status="error".
+
+        critical=True signals that a failure should route to human review upstream.
+        """
+        results = result if isinstance(result, list) else [result]
+        all_ok = True
+        for r in results:
+            if r.status == "error":
+                all_ok = False
+                logger.error(
+                    "Tool failure: tool=%s context=%s prospect=%s message=%s critical=%s",
+                    r.name,
+                    context,
+                    prospect_id,
+                    r.message,
+                    critical,
+                )
+                self.trace_logger.log(
+                    "tool_failure",
+                    {
+                        "prospect_id": prospect_id,
+                        "tool": r.name,
+                        "context": context,
+                        "message": r.message,
+                        "artifact_ref": r.artifact_ref,
+                        "critical": critical,
+                    },
+                )
+                self.repository.record_interaction_event(
+                    prospect_id,
+                    "tool_failure",
+                    channel=r.name,
+                    provider=r.name,
+                    payload={
+                        "context": context,
+                        "message": r.message,
+                        "critical": critical,
+                    },
+                )
+        return all_ok
+
+    # ------------------------------------------------------------------
+    # Core pipeline
+    # ------------------------------------------------------------------
 
     def intake_and_enrich(self, intake: LeadIntakeRequest) -> ProspectEnrichmentResponse:
         prospect, hiring_signal_brief, competitor_gap_brief = enrichment_service.enrich(intake)
@@ -71,6 +169,7 @@ class Orchestrator:
             body=body,
             prospect_id=snapshot.prospect.prospect_id,
         )
+        self._handle_tool_result(email_result, snapshot.prospect.prospect_id, "initial_email_send", critical=True)
         self.repository.record_interaction_event(
             snapshot.prospect.prospect_id,
             "email_sent",
@@ -78,42 +177,25 @@ class Orchestrator:
             provider=settings.email_provider,
             payload={"subject": subject, "result": email_result.message},
         )
+
+        # SMS is gated by can_send_sms() which requires email_reply_received.
+        # On initial outreach this always returns "skipped" — that is correct behaviour.
         sms_result = self.handoff_manager.prepare_warm_sms_handoff(
             snapshot,
             body="Warm-lead scheduling preview for Tenacious discovery-call coordination.",
         )
-        hubspot_results = hubspot_client.record_conversation_event(
-            {
-                "company_name": snapshot.prospect.company_name,
-                "company_domain": snapshot.prospect.company_domain,
-                "email": snapshot.prospect.contact_email,
-                "contact_name": snapshot.prospect.contact_name,
-                "phone": snapshot.prospect.contact_phone,
-                "segment": snapshot.prospect.primary_segment_label,
-                "segment_confidence": snapshot.prospect.segment_confidence,
-                "ai_maturity_score": snapshot.prospect.ai_maturity_score,
-                "bench_match": snapshot.hiring_signal_brief.bench_match.model_dump(mode="json"),
-                "trace_id": snapshot.trace_id,
-            },
-            snapshot.prospect.prospect_id,
-            activity_type="initial_outreach_prepared",
-            activity_summary="Initial email outreach prepared from enrichment and policy output.",
-            metadata={"channel_state": self.handoff_manager.current_state(snapshot.prospect.prospect_id)},
-        )
+        self._handle_tool_result(sms_result, snapshot.prospect.prospect_id, "initial_sms_preview")
 
-        results = [
-            crunchbase_connector.run(snapshot.prospect.prospect_id, matched=company_record is not None),
-            job_posts_connector.run(snapshot.prospect.prospect_id, matched=jobs_record is not None),
-            layoffs_connector.run(snapshot.prospect.prospect_id, matched=layoffs_record is not None),
-            leadership_connector.run(snapshot.prospect.prospect_id, matched=leadership_record is not None),
-            email_result,
-            sms_result,
-            calcom_client.book_preview(
-                company_name=snapshot.prospect.company_name,
-                contact_email=snapshot.prospect.contact_email,
-                prospect_id=snapshot.prospect.prospect_id,
-            ),
-            langfuse_client.mirror_trace(
+        calcom_result = calcom_client.book_preview(
+            company_name=snapshot.prospect.company_name,
+            contact_email=snapshot.prospect.contact_email,
+            prospect_id=snapshot.prospect.prospect_id,
+        )
+        self._handle_tool_result(calcom_result, snapshot.prospect.prospect_id, "scheduling_preview")
+
+        # Langfuse mirror — idempotent, safe to retry.
+        langfuse_result = _with_retries(
+            lambda: langfuse_client.mirror_trace(
                 trace_id=snapshot.trace_id or "pending",
                 payload={
                     "company_name": snapshot.prospect.company_name,
@@ -122,6 +204,46 @@ class Orchestrator:
                 },
                 prospect_id=snapshot.prospect.prospect_id,
             ),
+            max_attempts=3,
+        )
+        self._handle_tool_result(langfuse_result, snapshot.prospect.prospect_id, "langfuse_mirror")
+
+        # HubSpot contact upsert + enrichment write — idempotent, safe to retry.
+        # Note: record_conversation_event also creates an activity note, which is not
+        # idempotent; a retry may produce a duplicate note in HubSpot but that is
+        # preferable to silently dropping the CRM sync on a transient error.
+        hubspot_results = _with_retries(
+            lambda: hubspot_client.record_conversation_event(
+                {
+                    "company_name": snapshot.prospect.company_name,
+                    "company_domain": snapshot.prospect.company_domain,
+                    "email": snapshot.prospect.contact_email,
+                    "contact_name": snapshot.prospect.contact_name,
+                    "phone": snapshot.prospect.contact_phone,
+                    "segment": snapshot.prospect.primary_segment_label,
+                    "segment_confidence": snapshot.prospect.segment_confidence,
+                    "ai_maturity_score": snapshot.prospect.ai_maturity_score,
+                    "bench_match": snapshot.hiring_signal_brief.bench_match.model_dump(mode="json"),
+                    "trace_id": snapshot.trace_id,
+                },
+                snapshot.prospect.prospect_id,
+                activity_type="initial_outreach_prepared",
+                activity_summary="Initial email outreach prepared from enrichment and policy output.",
+                metadata={"channel_state": self.handoff_manager.current_state(snapshot.prospect.prospect_id)},
+            ),
+            max_attempts=2,  # bounded to 2 to limit duplicate activity notes
+        )
+        self._handle_tool_result(hubspot_results, snapshot.prospect.prospect_id, "hubspot_crm_sync")
+
+        results = [
+            crunchbase_connector.run(snapshot.prospect.prospect_id, matched=company_record is not None),
+            job_posts_connector.run(snapshot.prospect.prospect_id, matched=jobs_record is not None),
+            layoffs_connector.run(snapshot.prospect.prospect_id, matched=layoffs_record is not None),
+            leadership_connector.run(snapshot.prospect.prospect_id, matched=leadership_record is not None),
+            email_result,
+            sms_result,
+            calcom_result,
+            langfuse_result,
             tau2_adapter.readiness_check(),
         ]
         results.extend(hubspot_results)
@@ -181,15 +303,51 @@ class Orchestrator:
             provider=message.channel,
             payload={"body": body},
         )
-        decision, side_effects = self.handoff_manager.route_inbound_message(snapshot, message)
+
+        raw_decision, side_effects = self.handoff_manager.route_inbound_message(snapshot, message)
+
+        # ------------------------------------------------------------------
+        # Reply-send gap fix: when the handoff manager returns next_action="send_email",
+        # the reply_draft must be sent — not just returned to the caller as a string.
+        # If the send fails we flag it but still return the decision so the caller
+        # can route to human review via the risk_flags list.
+        # ------------------------------------------------------------------
+        additional_risk_flags: list[str] = []
+        if raw_decision.next_action == "send_email" and raw_decision.reply_draft:
+            subject, reply_body = self._extract_email_payload(raw_decision.reply_draft)
+            reply_subject = f"Re: {subject}" if not subject.lower().startswith("re:") else subject
+            reply_email_result = email_channel.send(
+                recipient=snapshot.prospect.contact_email,
+                subject=reply_subject,
+                body=reply_body,
+                prospect_id=snapshot.prospect.prospect_id,
+            )
+            ok = self._handle_tool_result(
+                reply_email_result,
+                snapshot.prospect.prospect_id,
+                "inbound_reply_email_send",
+                critical=True,
+            )
+            if not ok:
+                additional_risk_flags.append("reply_email_send_failed")
+            else:
+                self.repository.record_interaction_event(
+                    snapshot.prospect.prospect_id,
+                    "reply_email_sent",
+                    channel="email",
+                    provider=settings.email_provider,
+                    payload={"subject": reply_subject, "result": reply_email_result.message},
+                )
+
         decision = ConversationDecision(
-            next_action=decision.next_action,
-            channel=decision.channel,
-            reply_draft=decision.reply_draft,
-            needs_human=decision.needs_human,
-            risk_flags=decision.risk_flags,
+            next_action=raw_decision.next_action,
+            channel=raw_decision.channel,
+            reply_draft=raw_decision.reply_draft,
+            needs_human=raw_decision.needs_human or bool(additional_risk_flags),
+            risk_flags=raw_decision.risk_flags + additional_risk_flags,
             trace_tags=["inbound_reply", "policy_guarded", "central_handoff_manager"],
         )
+
         self.trace_logger.log(
             "inbound_reply_handled",
             {
@@ -208,31 +366,38 @@ class Orchestrator:
                 provider="calcom",
                 payload={"source_channel": message.channel},
             )
-        hubspot_results = hubspot_client.record_conversation_event(
-            {
-                "company_name": snapshot.prospect.company_name,
-                "company_domain": snapshot.prospect.company_domain,
-                "email": snapshot.prospect.contact_email,
-                "contact_name": snapshot.prospect.contact_name,
-                "phone": snapshot.prospect.contact_phone,
-                "segment": snapshot.prospect.primary_segment_label,
-                "segment_confidence": snapshot.prospect.segment_confidence,
-                "ai_maturity_score": snapshot.prospect.ai_maturity_score,
-                "bench_match": snapshot.hiring_signal_brief.bench_match.model_dump(mode="json"),
-                "last_inbound_channel": message.channel,
-                "last_reply_next_action": decision.next_action,
-                "trace_id": snapshot.trace_id,
-                "booking_status": "pending_confirmation" if decision.next_action == "book_meeting" else None,
-            },
-            snapshot.prospect.prospect_id,
-            activity_type=f"{message.channel}_reply_received",
-            activity_summary=f"Inbound {message.channel} reply processed with next action {decision.next_action}.",
-            metadata={
-                "risk_flags": decision.risk_flags,
-                "side_effects": [effect.model_dump(mode="json") for effect in side_effects],
-                "channel_state": self.handoff_manager.current_state(snapshot.prospect.prospect_id),
-            },
+
+        # HubSpot sync — idempotent contact upsert + enrichment write. Bounded retry.
+        hubspot_results = _with_retries(
+            lambda: hubspot_client.record_conversation_event(
+                {
+                    "company_name": snapshot.prospect.company_name,
+                    "company_domain": snapshot.prospect.company_domain,
+                    "email": snapshot.prospect.contact_email,
+                    "contact_name": snapshot.prospect.contact_name,
+                    "phone": snapshot.prospect.contact_phone,
+                    "segment": snapshot.prospect.primary_segment_label,
+                    "segment_confidence": snapshot.prospect.segment_confidence,
+                    "ai_maturity_score": snapshot.prospect.ai_maturity_score,
+                    "bench_match": snapshot.hiring_signal_brief.bench_match.model_dump(mode="json"),
+                    "last_inbound_channel": message.channel,
+                    "last_reply_next_action": decision.next_action,
+                    "trace_id": snapshot.trace_id,
+                    "booking_status": "pending_confirmation" if decision.next_action == "book_meeting" else None,
+                },
+                snapshot.prospect.prospect_id,
+                activity_type=f"{message.channel}_reply_received",
+                activity_summary=f"Inbound {message.channel} reply processed with next action {decision.next_action}.",
+                metadata={
+                    "risk_flags": decision.risk_flags,
+                    "side_effects": [effect.model_dump(mode="json") for effect in side_effects],
+                    "channel_state": self.handoff_manager.current_state(snapshot.prospect.prospect_id),
+                },
+            ),
+            max_attempts=2,
         )
+        self._handle_tool_result(hubspot_results, snapshot.prospect.prospect_id, "hubspot_inbound_sync")
+
         return decision
 
     def handle_calendar_confirmation(self, confirmation: dict[str, str]) -> dict[str, object]:
@@ -249,25 +414,29 @@ class Orchestrator:
             payload=confirmation,
         )
         self.repository.update_status(snapshot.prospect.prospect_id, "booked")
-        hubspot_results = hubspot_client.record_conversation_event(
-            {
-                "company_name": snapshot.prospect.company_name,
-                "company_domain": snapshot.prospect.company_domain,
-                "email": snapshot.prospect.contact_email,
-                "contact_name": snapshot.prospect.contact_name,
-                "phone": snapshot.prospect.contact_phone,
-                "segment": snapshot.prospect.primary_segment_label,
-                "segment_confidence": snapshot.prospect.segment_confidence,
-                "ai_maturity_score": snapshot.prospect.ai_maturity_score,
-                "bench_match": snapshot.hiring_signal_brief.bench_match.model_dump(mode="json"),
-                "trace_id": snapshot.trace_id,
-                "booking_status": confirmation["booking_status"],
-            },
-            snapshot.prospect.prospect_id,
-            activity_type="calendar_booking_confirmed",
-            activity_summary="Cal.com booking confirmation received and prospect marked as booked.",
-            metadata=confirmation,
+        hubspot_results = _with_retries(
+            lambda: hubspot_client.record_conversation_event(
+                {
+                    "company_name": snapshot.prospect.company_name,
+                    "company_domain": snapshot.prospect.company_domain,
+                    "email": snapshot.prospect.contact_email,
+                    "contact_name": snapshot.prospect.contact_name,
+                    "phone": snapshot.prospect.contact_phone,
+                    "segment": snapshot.prospect.primary_segment_label,
+                    "segment_confidence": snapshot.prospect.segment_confidence,
+                    "ai_maturity_score": snapshot.prospect.ai_maturity_score,
+                    "bench_match": snapshot.hiring_signal_brief.bench_match.model_dump(mode="json"),
+                    "trace_id": snapshot.trace_id,
+                    "booking_status": confirmation["booking_status"],
+                },
+                snapshot.prospect.prospect_id,
+                activity_type="calendar_booking_confirmed",
+                activity_summary="Cal.com booking confirmation received and prospect marked as booked.",
+                metadata=confirmation,
+            ),
+            max_attempts=2,
         )
+        self._handle_tool_result(hubspot_results, snapshot.prospect.prospect_id, "hubspot_booking_confirmed_sync")
         trace_id = self.trace_logger.log(
             "calendar_booking_confirmed",
             {
