@@ -1,6 +1,11 @@
 # The Conversion Engine
 
 End-to-end implementation slice for the Week 10 Tenacious conversion engine challenge. This repo is organized as a FastAPI-based orchestration layer that enriches a prospect, applies policy guards, drafts channel actions, writes CRM/calendar artifacts, and records evidence for review.
+# Dashboard 
+
+See the dashboard below for a visual overview of the application's interface:
+
+![Dashboard Screenshot](screenshoot/dashboard.png)
 
 ## What exists today
 
@@ -101,13 +106,6 @@ flowchart TD
 - Policy decisions live in [`agent/policies/`](./agent/policies) and sit between enrichment outputs and generation.
 - The reply-drafting backbone is the conversation-generation step used by the orchestrator and inbound-reply handler in [`agent/orchestration/service.py`](./agent/orchestration/service.py).
 - Channel handlers live in [`agent/channels/`](./agent/channels), CRM sync in [`agent/crm/`](./agent/crm), scheduling in [`agent/scheduling/`](./agent/scheduling), and traces in [`agent/observability/`](./agent/observability).
-
-
-## Dashboard Screenshot
-
-See the dashboard below for a visual overview of the application's interface:
-
-![Dashboard Screenshot](screenshoot/dashboard.png)
 
 ---
 
