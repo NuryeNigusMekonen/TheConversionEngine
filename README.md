@@ -109,9 +109,6 @@ flowchart TD
 
 ---
 
-## Tenacious Seed Materials
-
-All Tenacious-specific knowledge lives in [`docs/tenacious_sales_data/seed/`](./docs/tenacious_sales_data/seed/). The agent reads these files at startup via [`agent/seed/loader.py`](./agent/seed/loader.py) and uses them to drive every outbound decision. No real customer data is present.
 
 ### Files and what they influence
 
