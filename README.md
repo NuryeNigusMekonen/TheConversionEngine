@@ -1,6 +1,6 @@
 # The Conversion Engine
 
-End-to-end implementation slice for the Week 10 Tenacious conversion engine challenge. This repo is organized as a FastAPI-based orchestration layer that enriches a prospect, applies policy guards, drafts channel actions, writes CRM/calendar artifacts, and records evidence for review.
+End-to-end implementation slice for Tenacious conversion engine. This repo is organized as a FastAPI-based orchestration layer that enriches a prospect, applies policy guards, drafts channel actions, writes CRM/calendar artifacts, and records evidence for review.
 # Dashboard 
 
 See the dashboard below for a visual overview of the application's interface:
