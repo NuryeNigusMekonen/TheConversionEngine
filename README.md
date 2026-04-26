@@ -102,6 +102,15 @@ flowchart TD
 - The reply-drafting backbone is the conversation-generation step used by the orchestrator and inbound-reply handler in [`agent/orchestration/service.py`](./agent/orchestration/service.py).
 - Channel handlers live in [`agent/channels/`](./agent/channels), CRM sync in [`agent/crm/`](./agent/crm), scheduling in [`agent/scheduling/`](./agent/scheduling), and traces in [`agent/observability/`](./agent/observability).
 
+
+## Dashboard Screenshot
+
+See the dashboard below for a visual overview of the application's interface:
+
+![Dashboard Screenshot](screenshoot/dashboard.png)
+
+---
+
 ## Tenacious Seed Materials
 
 All Tenacious-specific knowledge lives in [`docs/tenacious_sales_data/seed/`](./docs/tenacious_sales_data/seed/). The agent reads these files at startup via [`agent/seed/loader.py`](./agent/seed/loader.py) and uses them to drive every outbound decision. No real customer data is present.
