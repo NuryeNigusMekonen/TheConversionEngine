@@ -78,7 +78,7 @@ DASHBOARD_HTML = """
       }
 
       .bottom-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
       }
 
       .panel {
@@ -188,6 +188,75 @@ DASHBOARD_HTML = """
         font-size: 0.85rem;
       }
 
+      .pill-neutral {
+        background: rgba(95, 104, 100, 0.12);
+        color: var(--muted);
+      }
+
+      .pill-success {
+        background: rgba(47, 111, 87, 0.16);
+        color: #205642;
+      }
+
+      .pill-warning {
+        background: rgba(155, 63, 47, 0.14);
+        color: #8a3527;
+      }
+
+      .pill-info {
+        background: rgba(33, 96, 145, 0.14);
+        color: #215f91;
+      }
+
+      .flow-card {
+        display: grid;
+        gap: 14px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 18px;
+        background:
+          radial-gradient(circle at top right, rgba(47, 111, 87, 0.08), transparent 32%),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 248, 245, 0.96));
+      }
+
+      .flow-head {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: start;
+      }
+
+      .flow-head p {
+        max-width: 48ch;
+      }
+
+      .flow-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .flow-stat {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.82);
+      }
+
+      .flow-stat span {
+        display: block;
+        font-size: 0.8rem;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      .flow-stat strong {
+        display: block;
+        font-size: 1rem;
+        line-height: 1.35;
+      }
+
       .muted-list {
         margin: 10px 0 0;
         padding-left: 18px;
@@ -213,7 +282,8 @@ DASHBOARD_HTML = """
       @media (max-width: 860px) {
         .top-grid,
         .bottom-grid,
-        .field-grid {
+        .field-grid,
+        .flow-grid {
           grid-template-columns: 1fr;
         }
 
@@ -286,6 +356,13 @@ DASHBOARD_HTML = """
 
       <section class="bottom-grid">
         <article class="panel stack">
+          <h2>Latest Flow</h2>
+          <div id="latest-flow">
+            <p>No interaction flow recorded yet.</p>
+          </div>
+        </article>
+
+        <article class="panel stack">
           <h2>Latest Result</h2>
           <div id="latest-result">
             <p>No prospect brief has been generated in this browser session yet.</p>
@@ -312,6 +389,20 @@ DASHBOARD_HTML = """
             <p>Loading tool status...</p>
           </div>
         </article>
+
+        <article class="panel stack">
+          <h2>Latest Timeline</h2>
+          <div id="latest-events">
+            <p>No interaction events yet.</p>
+          </div>
+        </article>
+
+        <article class="panel stack">
+          <h2>Latest Artifacts</h2>
+          <div id="latest-artifacts">
+            <p>No artifacts yet.</p>
+          </div>
+        </article>
       </section>
     </main>
 
@@ -323,6 +414,9 @@ DASHBOARD_HTML = """
       const recentProspectsEl = document.getElementById("recent-prospects");
       const recentTracesEl = document.getElementById("recent-traces");
       const toolStatusesEl = document.getElementById("tool-statuses");
+      const latestFlowEl = document.getElementById("latest-flow");
+      const latestEventsEl = document.getElementById("latest-events");
+      const latestArtifactsEl = document.getElementById("latest-artifacts");
       const prospectCountEl = document.getElementById("prospect-count");
       const traceCountEl = document.getElementById("trace-count");
 
@@ -332,6 +426,19 @@ DASHBOARD_HTML = """
           .replaceAll("<", "&lt;")
           .replaceAll(">", "&gt;")
           .replaceAll('"', "&quot;");
+      }
+
+      function pillToneClass(tone) {
+        if (tone === "success") return "pill pill-success";
+        if (tone === "warning") return "pill pill-warning";
+        if (tone === "info") return "pill pill-info";
+        return "pill pill-neutral";
+      }
+
+      function statusTone(value, positiveValues = []) {
+        if (positiveValues.includes(value)) return "success";
+        if (["pending", "not_started", "unknown", null, undefined, ""].includes(value)) return "warning";
+        return "info";
       }
 
       function renderLatest(snapshot) {
@@ -451,14 +558,103 @@ DASHBOARD_HTML = """
         `).join("");
       }
 
+      function renderLatestFlow(flow) {
+        if (!flow) {
+          latestFlowEl.innerHTML = "<p>No interaction flow recorded yet.</p>";
+          return;
+        }
+        const bookingTone = statusTone(flow.booking_status, ["confirmed"]);
+        const stateTone = statusTone(flow.current_state, ["booked", "voice_handoff_active", "sms_handoff_active"]);
+        const voiceTone = flow.voice_handoff_ready ? "success" : "warning";
+        const crmTone = flow.crm_logged ? "success" : "warning";
+        latestFlowEl.innerHTML = `
+          <div class="flow-card">
+            <div class="flow-head">
+              <div>
+                <h3>${escapeHtml(flow.company_name || "Unknown company")}</h3>
+                <p>The newest prospect flow, including booking, CRM sync, and voice handoff readiness.</p>
+              </div>
+              <div class="pill-row">
+                <span class="${pillToneClass(stateTone)}">State: ${escapeHtml(flow.current_state || "unknown")}</span>
+                <span class="${pillToneClass(bookingTone)}">Booking: ${escapeHtml(flow.booking_status || "unknown")}</span>
+              </div>
+            </div>
+            <div class="flow-grid">
+              <div class="flow-stat">
+                <span>Status</span>
+                <strong>${escapeHtml(flow.status || "unknown")}</strong>
+              </div>
+              <div class="flow-stat">
+                <span>Latest Event</span>
+                <strong>${escapeHtml(flow.latest_event || "none")}</strong>
+              </div>
+              <div class="flow-stat">
+                <span>Voice</span>
+                <strong>${flow.voice_handoff_ready ? "Ready for delivery lead" : "Not prepared yet"}</strong>
+              </div>
+              <div class="flow-stat">
+                <span>CRM</span>
+                <strong>${flow.crm_logged ? "Logged" : "Pending"}</strong>
+              </div>
+            </div>
+            <div class="pill-row">
+              <span class="${pillToneClass(voiceTone)}">${flow.voice_handoff_ready ? "voice ready" : "voice pending"}</span>
+              <span class="${pillToneClass(crmTone)}">${flow.crm_logged ? "crm logged" : "crm pending"}</span>
+              <span class="${pillToneClass("neutral")}">Prospect: ${escapeHtml(flow.prospect_id || "unknown")}</span>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderLatestEvents(events) {
+        if (!events.length) {
+          latestEventsEl.innerHTML = "<p>No interaction events yet.</p>";
+          return;
+        }
+        latestEventsEl.innerHTML = events.map((event) => `
+          <div class="item">
+            <h3>${escapeHtml(event.event_type)}</h3>
+            <p>${escapeHtml(event.payload_summary || "No payload summary available.")}</p>
+            <div class="pill-row">
+              <span class="pill">${escapeHtml(event.channel || "n/a")}</span>
+              <span class="pill">${escapeHtml(event.provider || "n/a")}</span>
+              <span class="pill">${escapeHtml(event.created_at)}</span>
+            </div>
+          </div>
+        `).join("");
+      }
+
+      function renderLatestArtifacts(artifacts) {
+        if (!artifacts.length) {
+          latestArtifactsEl.innerHTML = "<p>No artifacts yet.</p>";
+          return;
+        }
+        latestArtifactsEl.innerHTML = artifacts.map((artifact) => `
+          <div class="item">
+            <h3>${escapeHtml(artifact.name)}</h3>
+            <p>${escapeHtml(artifact.preview || artifact.path)}</p>
+            <div class="pill-row">
+              <span class="pill">${escapeHtml(artifact.content_type)}</span>
+              <a class="pill" href="${escapeHtml(artifact.route || "#")}" style="text-decoration:none;">Open Artifact</a>
+            </div>
+          </div>
+        `).join("");
+      }
+
       async function loadState() {
         const response = await fetch("/dashboard/state");
         const state = await response.json();
         prospectCountEl.textContent = state.total_prospects;
         traceCountEl.textContent = state.total_traces;
+        renderLatestFlow(state.latest_flow);
         renderProspects(state.recent_snapshots);
         renderTraces(state.recent_traces);
         renderToolStatuses(state.tool_statuses || []);
+        renderLatestEvents(state.latest_interaction_events || []);
+        renderLatestArtifacts(state.latest_artifacts || []);
+        if (state.recent_snapshots?.length && latestResultEl.textContent.includes("No prospect brief")) {
+          renderLatest(state.recent_snapshots[0]);
+        }
       }
 
       form.addEventListener("submit", async (event) => {
