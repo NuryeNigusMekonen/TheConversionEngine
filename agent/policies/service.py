@@ -1,3 +1,4 @@
+from agent.generation.service import generation_service
 from agent.schemas.briefs import CompetitorGapBrief, HiringSignalBrief
 from agent.schemas.conversation import ConversationDecision
 from agent.schemas.prospect import ProspectRecord
@@ -108,6 +109,8 @@ class PolicyService:
         prospect: ProspectRecord,
         hiring_signal_brief: HiringSignalBrief,
         competitor_gap_brief: CompetitorGapBrief,
+        *,
+        trace_id: str | None = None,
     ) -> ConversationDecision:
         risk_flags: list[str] = []
 
@@ -171,15 +174,47 @@ class PolicyService:
             # A violation routes to human review — do not suppress the draft
             risk_flags.append("style_validation_failed")
 
-        reply_draft = f"Subject: {subject}\n\n{body_content}{signature}"
+        fallback_body = f"{body_content}{signature}"
+        draft = generation_service.draft_email_from_scaffold(
+            trace_id=trace_id,
+            prospect_id=prospect.prospect_id,
+            scenario="initial_outreach",
+            company_name=prospect.company_name,
+            contact_name=prospect.contact_name,
+            fallback_subject=subject,
+            fallback_body=fallback_body,
+            context={
+                "primary_segment": prospect.primary_segment_label,
+                "segment_confidence": round(prospect.segment_confidence, 2),
+                "ai_maturity_score": prospect.ai_maturity_score,
+                "recommended_pitch_angle": hiring_signal_brief.recommended_pitch_angle,
+                "signals": [signal.summary for signal in hiring_signal_brief.signals[:4]],
+                "confidence_by_signal": [
+                    {
+                        "signal_name": item.signal_name,
+                        "score": item.score,
+                    }
+                    for item in hiring_signal_brief.confidence_by_signal
+                ],
+                "top_quartile_practices": competitor_gap_brief.top_quartile_practices[:3],
+                "safe_gap_framing": competitor_gap_brief.safe_gap_framing,
+                "do_not_claim": hiring_signal_brief.do_not_claim,
+                "risk_flags": risk_flags,
+            },
+        )
 
         return ConversationDecision(
             next_action="send_email",
             channel="email",
-            reply_draft=reply_draft,
+            reply_draft=draft.as_reply_draft,
             needs_human=not hiring_signal_brief.bench_match.sufficient or bool(style_violations),
             risk_flags=risk_flags,
-            trace_tags=["draft_initial_outreach", "seed_driven_policy", "confidence_aware_policy"],
+            trace_tags=[
+                "draft_initial_outreach",
+                "seed_driven_policy",
+                "confidence_aware_policy",
+                "llm_rewritten" if draft.source == "openrouter" else "deterministic_fallback",
+            ],
         )
 
 

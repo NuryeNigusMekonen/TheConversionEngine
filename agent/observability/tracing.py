@@ -11,8 +11,11 @@ class TraceLogger:
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.trace_path = trace_path or str(settings.trace_path)
 
-    def log(self, event_type: str, payload: dict) -> str:
-        trace_id = f"tr_{uuid4().hex[:12]}"
+    def new_trace_id(self) -> str:
+        return f"tr_{uuid4().hex[:12]}"
+
+    def log(self, event_type: str, payload: dict, *, trace_id: str | None = None) -> str:
+        trace_id = trace_id or self.new_trace_id()
         record = {
             "trace_id": trace_id,
             "event_type": event_type,
