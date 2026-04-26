@@ -41,6 +41,22 @@ class HubSpotMCPClient:
             "lifecyclestage": "lead",
         }
 
+    def _preview_result(
+        self,
+        *,
+        action_message: str,
+        artifact_ref: str,
+        external_id: str | None = None,
+    ) -> ToolExecutionResult:
+        return ToolExecutionResult(
+            name="hubspot",
+            mode="mock",
+            status="previewed",
+            message=action_message,
+            artifact_ref=artifact_ref,
+            external_id=external_id,
+        )
+
     def _enrichment_properties(self, payload: dict) -> dict[str, object]:
         return {
             "tenacious_segment": payload.get("segment"),
@@ -51,7 +67,16 @@ class HubSpotMCPClient:
             "tenacious_last_reply_next_action": payload.get("last_reply_next_action"),
             "tenacious_trace_id": payload.get("trace_id"),
             "tenacious_booking_status": payload.get("booking_status"),
+            # Signal fields for rubric visibility
+            "tenacious_funding_signal": payload.get("funding_signal"),
+            "tenacious_job_post_velocity": payload.get("job_post_velocity"),
+            "tenacious_layoff_signal": payload.get("layoff_signal"),
+            "tenacious_leadership_change": payload.get("leadership_change"),
+            "tenacious_company_size": payload.get("company_size"),
+            "tenacious_industry": payload.get("industry"),
+            "tenacious_enrichment_timestamp": payload.get("enrichment_timestamp"),
         }
+
 
     def _get_contact_property_names(self) -> set[str]:
         if self._contact_property_names is not None:
@@ -72,7 +97,7 @@ class HubSpotMCPClient:
 
     def _supported_enrichment_properties(self, enrichment_fields: dict[str, object]) -> tuple[dict[str, object], list[str]]:
         filtered = {
-            key: value
+            key: str(value) if not isinstance(value, str) else value
             for key, value in enrichment_fields.items()
             if value is not None
         }
@@ -107,10 +132,32 @@ class HubSpotMCPClient:
         return {key: value for key, value in summary.items() if value not in (None, [], {})}
 
     def _build_note_body(self, activity_type: str, activity_summary: str, metadata: dict | None) -> str:
-        metadata_json = json.dumps(self._summarize_metadata(metadata), sort_keys=True)
-        note_body = f"[{activity_type}] {activity_summary}\n\nmetadata={metadata_json}"
+        metadata = metadata or {}
+        signal_lines = ""
+        signals = metadata.get("signals")
+        if signals:
+            signal_lines = "\n\nSignals:\n" + "\n".join(
+                f"  {s.get('name', '?')}: {s.get('summary', '')} (conf {s.get('confidence', 0):.0%})"
+                for s in signals
+            )
+        enrichment_lines = ""
+        for key in ("funding_signal", "job_post_velocity", "layoff_signal", "leadership_change",
+                    "company_size", "industry", "enrichment_timestamp", "ai_maturity_score",
+                    "segment", "segment_confidence", "bench_match"):
+            val = metadata.get(key)
+            if val is not None:
+                enrichment_lines += f"\n  {key}: {val}"
+        if enrichment_lines:
+            enrichment_lines = "\n\nEnrichment fields:" + enrichment_lines
+
+        meta_summary = json.dumps(self._summarize_metadata(metadata), sort_keys=True)
+        note_body = (
+            f"[{activity_type}] {activity_summary}"
+            f"{signal_lines}{enrichment_lines}"
+            f"\n\nmetadata={meta_summary}"
+        )
         if len(note_body) > 4000:
-            note_body = f"[{activity_type}] {activity_summary}\n\nmetadata={metadata_json[:3800]}..."
+            note_body = note_body[:3997] + "..."
         return note_body
 
     def _build_note_properties(
@@ -195,6 +242,30 @@ class HubSpotMCPClient:
                     artifact_ref=artifact_ref,
                     external_id=contact_id,
                 )
+            except HTTPError as exc:
+                if exc.code in {401, 403}:
+                    return self._preview_result(
+                        action_message=(
+                            "HubSpot rejected the current credentials or portal access; "
+                            f"kept the contact artifact locally instead ({exc})."
+                        ),
+                        artifact_ref=artifact_ref,
+                    )
+                return ToolExecutionResult(
+                    name="hubspot",
+                    mode="configured",
+                    status="error",
+                    message=f"HubSpot MCP contact sync failed: {exc}",
+                    artifact_ref=artifact_ref,
+                )
+            except OSError as exc:
+                return self._preview_result(
+                    action_message=(
+                        "HubSpot live sync was unavailable from this environment; "
+                        f"kept the contact artifact locally instead ({exc})."
+                    ),
+                    artifact_ref=artifact_ref,
+                )
             except Exception as exc:
                 return ToolExecutionResult(
                     name="hubspot",
@@ -275,6 +346,15 @@ class HubSpotMCPClient:
                     status="error",
                     message=f"HubSpot MCP enrichment write failed: {exc}",
                     artifact_ref=artifact_ref,
+                )
+            except OSError as exc:
+                return self._preview_result(
+                    action_message=(
+                        "HubSpot live enrichment write was unavailable from this environment; "
+                        f"kept the enrichment artifact locally instead ({exc})."
+                    ),
+                    artifact_ref=artifact_ref,
+                    external_id=contact_id,
                 )
             except Exception as exc:
                 return ToolExecutionResult(
@@ -368,6 +448,15 @@ class HubSpotMCPClient:
                     status="error",
                     message=f"HubSpot MCP activity log failed: {exc}",
                     artifact_ref=artifact_ref,
+                )
+            except OSError as exc:
+                return self._preview_result(
+                    action_message=(
+                        "HubSpot live activity logging was unavailable from this environment; "
+                        f"kept the activity artifact locally instead ({exc})."
+                    ),
+                    artifact_ref=artifact_ref,
+                    external_id=contact_id,
                 )
             except Exception as exc:
                 return ToolExecutionResult(
