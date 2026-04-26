@@ -11,6 +11,7 @@ from urllib.error import HTTPError
 
 from agent.channels.email import EmailChannel
 from agent.channels.sms import SmsChannel
+from agent.channels.voice import VoiceChannel
 from agent.config import settings
 from agent.crm.hubspot import HubSpotClient
 from agent.scheduling.calcom import CalComClient
@@ -201,6 +202,103 @@ def test_sms_falls_back_to_preview_when_provider_rejects_credentials(monkeypatch
 
     assert result.status == "previewed"
     assert "rejected the current credentials or sender identity" in result.message
+
+
+# ---------------------------------------------------------------------------
+# Voice channel — bonus-tier delivery-lead handoff
+# ---------------------------------------------------------------------------
+
+def test_voice_handoff_writes_artifact() -> None:
+    channel = VoiceChannel()
+    result = channel.prepare_handoff(
+        phone_number="+254700000000",
+        prospect_id="pros_ch_voice_001",
+        company_name="ClearMint",
+        contact_name="Amara Cole",
+        contact_email="amara@clearmint.io",
+        allow_warm_lead=True,
+        booking_link="https://cal.com/tenacious/discovery-call",
+        context_brief="# Discovery Call Handoff",
+    )
+    assert result.status in ("executed", "previewed"), f"Unexpected status: {result.status}"
+    assert result.artifact_ref is not None
+
+
+def test_voice_artifact_contains_booking_link_and_context() -> None:
+    channel = VoiceChannel()
+    channel.prepare_handoff(
+        phone_number="+254700000000",
+        prospect_id="pros_ch_voice_002",
+        company_name="ClearMint",
+        contact_name="Amara Cole",
+        contact_email="amara@clearmint.io",
+        allow_warm_lead=True,
+        booking_link="https://cal.com/tenacious/discovery-call",
+        context_brief="# Discovery Call Handoff\n\n- Prospect: Amara Cole",
+    )
+    payload = _read_outbox("pros_ch_voice_002", "voice")
+    assert payload.get("booking_link") == "https://cal.com/tenacious/discovery-call"
+    assert "Discovery Call Handoff" in payload.get("context_brief", "")
+
+
+def test_voice_handoff_requires_prior_email_reply() -> None:
+    channel = VoiceChannel()
+    result = channel.prepare_handoff(
+        phone_number="+254700000000",
+        prospect_id="pros_ch_voice_003",
+        company_name="ClearMint",
+        contact_name="Amara Cole",
+        contact_email="amara@clearmint.io",
+        allow_warm_lead=False,
+    )
+    assert result.status == "skipped"
+    assert "warm-lead gate" in result.message
+
+
+def test_voice_status_always_available() -> None:
+    channel = VoiceChannel()
+    status = channel.status()
+    assert status.name == "voice"
+    assert status.mode in ("mock", "configured")
+    assert status.available is True
+
+
+def test_voice_falls_back_to_preview_when_provider_rejects_credentials(monkeypatch) -> None:
+    channel = VoiceChannel()
+    monkeypatch.setattr(
+        "agent.channels.voice.settings",
+        SimpleNamespace(
+            outbox_dir=settings.outbox_dir,
+            outbound_enabled=True,
+            voice_provider="shared_voice_rig",
+            shared_voice_rig_webhook_url="https://voice.example.com/handoff",
+            shared_voice_rig_api_key="live-key",
+            shared_voice_rig_keyword_prefix="TENACIOUS",
+        ),
+    )
+
+    def raise_http_error(*args, **kwargs):
+        raise HTTPError(
+            url="https://voice.example.com/handoff",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr("agent.channels.voice.request_json", raise_http_error)
+
+    result = channel.prepare_handoff(
+        phone_number="+254700000000",
+        prospect_id="pros_ch_voice_004",
+        company_name="ClearMint",
+        contact_name="Amara Cole",
+        contact_email="amara@clearmint.io",
+        allow_warm_lead=True,
+    )
+
+    assert result.status == "previewed"
+    assert "Shared Voice Rig rejected" in result.message
 
 
 # ---------------------------------------------------------------------------

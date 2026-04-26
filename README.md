@@ -8,7 +8,7 @@ End-to-end implementation slice for the Week 10 Tenacious conversion engine chal
 - Typed schemas for prospects, briefs, bench match, and conversation decisions
 - SQLite-backed repository for synthetic prospect records
 - JSONL trace logging for evidence-friendly development
-- Integration-aware toolchain across enrichment, email, SMS, CRM, scheduling, observability, and benchmark readiness
+- Integration-aware toolchain across enrichment, email, SMS, bonus-tier voice handoff, CRM, scheduling, observability, and benchmark readiness
 - Confidence-aware ICP classifier with abstention
 - Bench-gated commitment policy loaded from Tenacious seed materials
 - Email reply handler for pricing guardrails, scheduling, SMS handoff, and opt-out
@@ -23,12 +23,12 @@ stack is:
 FastAPI entrypoints (agent/api/routes.py)
   └── Orchestrator service (agent/orchestration/service.py)
         ├── ChannelHandoffManager state machine (agent/orchestration/handoff.py)
-        │     Tracks: new → email_only → warm_lead_ready_for_sms → sms_handoff_active → booked
+        │     Tracks: new → email_only → warm_lead_ready_for_sms → sms_handoff_active / voice_handoff_active → booked
         ├── SQLite interaction_events (agent/storage/repository.py)
         │     Durable event log: email_sent, email_reply_received, sms_handoff_sent,
-        │     booking_link_shared, booking_confirmed, tool_failure
+        │     voice_handoff_sent, booking_link_shared, booking_confirmed, tool_failure
         ├── JSONL trace log (agent/data/traces.jsonl)
-        └── External tool adapters (email, SMS, Cal.com, HubSpot, Langfuse, enrichment connectors)
+        └── External tool adapters (email, SMS, voice, Cal.com, HubSpot, Langfuse, enrichment connectors)
 ```
 
 **Key orchestration invariants:**
@@ -37,6 +37,8 @@ FastAPI entrypoints (agent/api/routes.py)
   sent on initial outreach.
 - SMS additionally requires one of: prospect asked for SMS, scheduling intent + phone on file,
   or warm lead + scheduling-focused message (see SMS eligibility policy in `handoff.py`).
+- Voice handoff is bonus-tier and warm only. The current implementation prepares a
+  delivery-lead / Shared Voice Rig artifact after explicit voice preference or booking confirmation.
 - `calcom_client.book_preview()` is intentionally non-mutating — it generates a booking link
   artifact only. Real bookings are created exclusively from the Cal.com webhook
   (`POST /webhooks/calcom → handle_calendar_confirmation()`).
@@ -57,7 +59,7 @@ flowchart TD
     C["Policy layer\n(ICP classifier · bench gate · abstention)"]
     D["Initial email outreach\n(email_channel.send → email_sent event)"]
     E["SQLite interaction_events\n(durable state per prospect_id)"]
-    F["Inbound reply\n(POST /conversations/reply\nor /webhooks/resend /webhooks/africastalking)"]
+    F["Inbound reply\n(POST /conversations/reply\nor /webhooks/resend /webhooks/africastalking /webhooks/voice)"]
     G["ChannelHandoffManager\nroute_inbound_message()"]
     H{"next_action?"}
     I["send_email\n→ email_channel.send(reply_draft)\n→ reply_email_sent event"]
@@ -252,6 +254,16 @@ AFRICASTALKING_SENDER_ID=TENACIOUS
 
 Do not set `EMAIL_PROVIDER=africastalking`; Africa's Talking is only for `SMS_PROVIDER`. Resend and MailerSend both require a verified from address or domain before live delivery works. For a live Africa's Talking app, replace `sandbox` with the real app username and use a sender ID or short code approved in that account.
 
+For the Shared Voice Rig bonus tier:
+
+```bash
+VOICE_PROVIDER=shared_voice_rig
+SHARED_VOICE_RIG_WEBHOOK_URL=...
+SHARED_VOICE_RIG_API_KEY=...
+SHARED_VOICE_RIG_KEYWORD_PREFIX=YOUR_PREFIX
+VOICE_WEBHOOK_SECRET=...
+```
+
 ## Configuration Reference
 
 The repo ships with an [`.env.example`](./.env.example) file. The table below explains every configuration variable used by the app and eval wrappers.
@@ -286,6 +298,16 @@ The repo ships with an [`.env.example`](./.env.example) file. The table below ex
 | `AFRICASTALKING_USERNAME` | Africa's Talking configured/live mode | Sandbox or production username for SMS delivery. |
 | `AFRICASTALKING_API_KEY` | Africa's Talking configured/live mode | API credential for SMS delivery. |
 | `AFRICASTALKING_SENDER_ID` | Africa's Talking | Sender ID or shortcode label for outbound SMS. |
+
+### Voice settings
+
+| Variable | Required for | Purpose |
+|---|---|---|
+| `VOICE_PROVIDER` | Any voice action | Selects `mock` or `shared_voice_rig`. |
+| `SHARED_VOICE_RIG_WEBHOOK_URL` | Shared Voice Rig configured/live mode | Target webhook URL for delivery-lead voice handoff registration. |
+| `SHARED_VOICE_RIG_API_KEY` | Shared Voice Rig optional auth | Bearer credential for the rig if required. |
+| `SHARED_VOICE_RIG_KEYWORD_PREFIX` | Shared Voice Rig configured/live mode | Per-trainee keyword prefix used by the bonus-tier rig. |
+| `VOICE_WEBHOOK_SECRET` | Voice webhook verification | Shared secret placeholder for inbound voice webhook hardening. |
 
 ### CRM settings
 
@@ -358,6 +380,7 @@ Every top-level folder currently present at the repo root is mapped below.
 - `GET /prospects/{prospect_id}`
 - `POST /webhooks/resend`
 - `POST /webhooks/africastalking`
+- `POST /webhooks/voice`
 - `POST /webhooks/calcom`
 - `POST /webhooks/hubspot`
 
@@ -373,6 +396,7 @@ After deployment:
 ```text
 {APP_BASE_URL}/webhooks/resend
 {APP_BASE_URL}/webhooks/africastalking
+{APP_BASE_URL}/webhooks/voice
 {APP_BASE_URL}/webhooks/calcom
 {APP_BASE_URL}/webhooks/hubspot
 ```
@@ -407,7 +431,7 @@ After deployment:
 - Live provider verification is still incomplete from this shell environment. The orchestration path and local artifacts exist, but HubSpot, Cal.com, and some outbound requests previously failed with name-resolution errors; see [docs/interim_client_progress_report.md](./docs/interim_client_progress_report.md).
 - The benchmark submodule metadata is not fresh-clone ready yet. [`.gitmodules`](./.gitmodules) still points `eval/tau2-bench` at `https://github.com/YOUR_GITHUB_USERNAME/tau2-bench.git`, so a successor should repair that URL or vendor the benchmark another way before relying on `git submodule update --init --recursive`.
 - Company-level deduplication is not implemented. [memo.md](./memo.md) calls out the concrete risk: two contacts from the same company can receive different pitch framings on the same day.
-- Voice remains intentionally out of scope for the current implementation. The repo treats voice as the human discovery-call endpoint, so any scored requirement for automated voice would be new work rather than hidden functionality.
+- Voice is implemented as a bonus-tier warm handoff path, not as cold automated calling. The repo prepares a delivery-lead / Shared Voice Rig artifact after explicit voice preference or booking confirmation, while keeping the challenge's email-first channel hierarchy intact.
 - The repo contains local-generated state in `agent/data/`, `.venv/`, `.pytest_cache/`, and `.ruff_cache/`. A successor should decide whether to keep those artifacts for evidence review or clean them before packaging the repo.
 
 ### Recommended first tasks for a successor

@@ -1,1 +1,1 @@
-"""Channel adapters for email and SMS."""
+"""Channel adapters for email, SMS, and bonus-tier voice handoff."""

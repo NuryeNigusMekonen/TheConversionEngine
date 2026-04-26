@@ -41,7 +41,7 @@ class CalComClient:
     ) -> tuple[str, str]:
         base_url = "https://cal.com"
         if settings.calcom_username:
-            base_url = f"{base_url}/{settings.calcom_username}"
+            base_url = f"{base_url}/{settings.calcom_username}/{settings.calcom_event_type_slug}"
         else:
             base_url = f"{base_url}/{settings.calcom_event_type_slug}"
         query = urlencode(

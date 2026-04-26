@@ -38,7 +38,7 @@ class InboundMessageRequest(BaseModel):
     prospect_id: str | None = None
     contact_email: str | None = None
     contact_phone: str | None = None
-    channel: Literal["email", "sms"] = "email"
+    channel: Literal["email", "sms", "voice"] = "email"
     body: str = Field(..., min_length=1)
     timezone: str | None = None
 
