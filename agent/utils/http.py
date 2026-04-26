@@ -17,7 +17,7 @@ def request_json(
     *,
     headers: dict[str, str] | None = None,
     payload: dict[str, Any] | None = None,
-    timeout: int = 20,
+    timeout: int = 8,
 ) -> tuple[int, dict[str, Any], dict[str, str]]:
     body = None
     request_headers = {
@@ -42,7 +42,7 @@ def request_form(
     *,
     headers: dict[str, str] | None = None,
     payload: dict[str, Any] | None = None,
-    timeout: int = 20,
+    timeout: int = 8,
 ) -> tuple[int, str, dict[str, str]]:
     encoded = urlencode(payload or {}).encode("utf-8")
     request_headers = {

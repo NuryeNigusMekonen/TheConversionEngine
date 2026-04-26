@@ -1,10 +1,12 @@
 import logging
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TypeVar
 
 from agent.channels.email import email_channel
 from agent.channels.sms import sms_channel
+from agent.channels.voice import voice_channel
 from agent.config import settings
 from agent.crm.hubspot import hubspot_client
 from agent.enrichment.service import enrichment_service
@@ -15,13 +17,20 @@ from agent.enrichment.connectors import (
     leadership_connector,
 )
 from agent.evaluation.tau2 import tau2_adapter
+from agent.generation.service import generation_service
 from agent.observability.langfuse import langfuse_client
 from agent.observability.tracing import TraceLogger
 from agent.orchestration.handoff import ChannelHandoffManager
 from agent.policies.service import policy_service
 from agent.schemas.briefs import ProspectEnrichmentResponse
 from agent.schemas.conversation import ConversationDecision
-from agent.schemas.dashboard import DashboardStateResponse, RecentTrace
+from agent.schemas.dashboard import (
+    DashboardArtifact,
+    DashboardFlowSummary,
+    DashboardInteractionEvent,
+    DashboardStateResponse,
+    RecentTrace,
+)
 from agent.schemas.prospect import InboundMessageRequest, LeadIntakeRequest, ProspectRecord
 from agent.schemas.tools import ToolExecutionResult, ToolStatus, ToolchainReport
 from agent.scheduling.calcom import calcom_client
@@ -129,13 +138,15 @@ class Orchestrator:
 
     def intake_and_enrich(self, intake: LeadIntakeRequest) -> ProspectEnrichmentResponse:
         prospect, hiring_signal_brief, competitor_gap_brief = enrichment_service.enrich(intake)
+        trace_id = self.trace_logger.new_trace_id()
         decision = policy_service.draft_initial_decision(
             prospect=prospect,
             hiring_signal_brief=hiring_signal_brief,
             competitor_gap_brief=competitor_gap_brief,
+            trace_id=trace_id,
         )
 
-        trace_id = self.trace_logger.log(
+        self.trace_logger.log(
             "prospect_enriched",
             {
                 "prospect_id": prospect.prospect_id,
@@ -144,6 +155,7 @@ class Orchestrator:
                 "ai_maturity_score": prospect.ai_maturity_score,
                 "risk_flags": decision.risk_flags,
             },
+            trace_id=trace_id,
         )
 
         return self.repository.save_snapshot(
@@ -212,6 +224,12 @@ class Orchestrator:
         # Note: record_conversation_event also creates an activity note, which is not
         # idempotent; a retry may produce a duplicate note in HubSpot but that is
         # preferable to silently dropping the CRM sync on a transient error.
+        def _signal_summary(name: str) -> str | None:
+            for s in snapshot.hiring_signal_brief.signals:
+                if s.name == name:
+                    return s.summary
+            return None
+
         hubspot_results = _with_retries(
             lambda: hubspot_client.record_conversation_event(
                 {
@@ -225,11 +243,32 @@ class Orchestrator:
                     "ai_maturity_score": snapshot.prospect.ai_maturity_score,
                     "bench_match": snapshot.hiring_signal_brief.bench_match.model_dump(mode="json"),
                     "trace_id": snapshot.trace_id,
+                    "funding_signal": _signal_summary("funding_event"),
+                    "job_post_velocity": _signal_summary("job_post_velocity"),
+                    "layoff_signal": _signal_summary("layoff_signal"),
+                    "leadership_change": _signal_summary("leadership_change"),
+                    "company_size": company_record.get("employee_count") if company_record else None,
+                    "industry": company_record.get("sector") if company_record else None,
+                    "enrichment_timestamp": snapshot.hiring_signal_brief.generated_at,
                 },
                 snapshot.prospect.prospect_id,
                 activity_type="initial_outreach_prepared",
-                activity_summary="Initial email outreach prepared from enrichment and policy output.",
-                metadata={"channel_state": self.handoff_manager.current_state(snapshot.prospect.prospect_id)},
+                activity_summary=f"Initial outreach prepared for {snapshot.prospect.company_name} — segment: {snapshot.prospect.primary_segment_label}, AI maturity: {snapshot.prospect.ai_maturity_score}/3.",
+                metadata={
+                    "channel_state": self.handoff_manager.current_state(snapshot.prospect.prospect_id),
+                    "signals": [s.model_dump(mode="json") for s in snapshot.hiring_signal_brief.signals],
+                    "funding_signal": _signal_summary("funding_event"),
+                    "job_post_velocity": _signal_summary("job_post_velocity"),
+                    "layoff_signal": _signal_summary("layoff_signal"),
+                    "leadership_change": _signal_summary("leadership_change"),
+                    "company_size": company_record.get("employee_count") if company_record else None,
+                    "industry": company_record.get("sector") if company_record else None,
+                    "enrichment_timestamp": snapshot.hiring_signal_brief.generated_at,
+                    "ai_maturity_score": snapshot.prospect.ai_maturity_score,
+                    "segment": snapshot.prospect.primary_segment_label,
+                    "segment_confidence": snapshot.prospect.segment_confidence,
+                    "bench_match": snapshot.hiring_signal_brief.bench_match.model_dump(mode="json"),
+                },
             ),
             max_attempts=2,  # bounded to 2 to limit duplicate activity notes
         )
@@ -252,13 +291,17 @@ class Orchestrator:
             results=results,
         )
 
-        trace_id = self.trace_logger.log(
+        self._write_context_brief(snapshot, company_record, jobs_record, layoffs_record, leadership_record)
+
+        trace_id = snapshot.trace_id or self.trace_logger.new_trace_id()
+        self.trace_logger.log(
             "toolchain_run",
             {
                 "prospect_id": snapshot.prospect.prospect_id,
                 "company_name": snapshot.prospect.company_name,
                 "results": [result.model_dump(mode="json") for result in results],
             },
+            trace_id=trace_id,
         )
 
         return self.repository.save_snapshot(
@@ -269,6 +312,109 @@ class Orchestrator:
             trace_id=trace_id,
             toolchain_report=toolchain_report,
         )
+
+    def _write_context_brief(
+        self,
+        snapshot: ProspectEnrichmentResponse,
+        company_record: dict | None,
+        jobs_record: dict | None,
+        layoffs_record: dict | None,
+        leadership_record: dict | None,
+    ) -> None:
+        """Write a human-readable discovery-call brief to the outbox as {prospect_id}_context_brief.md."""
+        p = snapshot.prospect
+        hsb = snapshot.hiring_signal_brief
+        cgb = snapshot.competitor_gap_brief
+
+        def _sig(name: str) -> str:
+            for s in hsb.signals:
+                if s.name == name:
+                    return f"{s.summary} (confidence {s.confidence:.0%})"
+            return "No signal found."
+
+        bench = hsb.bench_match
+        bench_line = (
+            f"Sufficient — {bench.available_capacity} available for {bench.required_stacks}"
+            if bench.sufficient
+            else f"Mismatch — required {bench.required_stacks}, available {bench.available_capacity}. Route to human."
+        )
+
+        company_size = company_record.get("employee_count", "unknown") if company_record else "unknown"
+        industry = company_record.get("sector", "unknown") if company_record else "unknown"
+        funding = company_record.get("funding_musd") if company_record else None
+        funding_line = f"${funding}M" if funding else "Not found in snapshot."
+
+        pitch = snapshot.initial_decision.reply_draft if snapshot.initial_decision else ""
+
+        md = f"""# Discovery Call Context Brief
+
+**Prospect:** {p.company_name}
+**Contact:** {p.contact_name or "Unknown"} &lt;{p.contact_email or "unknown"}&gt;
+**Phone:** {p.contact_phone or "Not provided"}
+**Generated:** {hsb.generated_at}
+**Prospect ID:** {p.prospect_id}
+
+---
+
+## ICP Segment
+
+**Segment:** {hsb.primary_segment}
+**Confidence:** {hsb.segment_confidence:.0%}
+**AI Maturity Score:** {hsb.ai_maturity_score}/3
+**Recommended Pitch:** {hsb.recommended_pitch_angle}
+
+---
+
+## Company Profile
+
+| Field | Value |
+|---|---|
+| Company | {p.company_name} |
+| Domain | {p.company_domain or "unknown"} |
+| Industry / Sector | {industry} |
+| Size | {company_size} employees |
+| Funding | {funding_line} |
+
+---
+
+## Enrichment Signals
+
+| Signal | Finding |
+|---|---|
+| Funding Event | {_sig("funding_event")} |
+| Job Post Velocity | {_sig("job_post_velocity")} |
+| Layoff Signal | {_sig("layoff_signal")} |
+| Leadership Change | {_sig("leadership_change")} |
+
+---
+
+## Bench Match
+
+{bench_line}
+
+---
+
+## Competitor Gap
+
+**Sector position:** {cgb.safe_gap_framing}
+**Confidence:** {cgb.confidence:.0%}
+{"**Peer companies:** " + ", ".join(cgb.peer_companies[:3]) if cgb.peer_companies else "Sparse sector — no direct peers found."}
+
+---
+
+## Suggested Outreach Draft
+
+```
+{pitch[:800]}
+```
+
+---
+
+*This brief was generated automatically by the Tenacious Conversion Engine. Do not share externally.*
+"""
+        brief_path = settings.outbox_dir / f"{p.prospect_id}_context_brief.md"
+        settings.outbox_dir.mkdir(parents=True, exist_ok=True)
+        brief_path.write_text(md, encoding="utf-8")
 
     def handle_inbound_message(self, message: InboundMessageRequest) -> ConversationDecision:
         snapshot = None
@@ -295,7 +441,11 @@ class Orchestrator:
             return decision
 
         body = message.body.lower()
-        event_type = "email_reply_received" if message.channel == "email" else "sms_reply_received"
+        event_type = {
+            "email": "email_reply_received",
+            "sms": "sms_reply_received",
+            "voice": "voice_reply_received",
+        }.get(message.channel, "inbound_reply_received")
         self.repository.record_interaction_event(
             snapshot.prospect.prospect_id,
             event_type,
@@ -357,6 +507,7 @@ class Orchestrator:
                 "next_action": decision.next_action,
                 "risk_flags": decision.risk_flags,
             },
+            trace_id=snapshot.trace_id,
         )
         if decision.next_action == "book_meeting":
             self.repository.record_interaction_event(
@@ -367,7 +518,7 @@ class Orchestrator:
                 payload={"source_channel": message.channel},
             )
 
-        # HubSpot sync — idempotent contact upsert + enrichment write. Bounded retry.
+        # HubSpot sync — single attempt on reply path; initial enrichment already persisted.
         hubspot_results = _with_retries(
             lambda: hubspot_client.record_conversation_event(
                 {
@@ -394,7 +545,7 @@ class Orchestrator:
                     "channel_state": self.handoff_manager.current_state(snapshot.prospect.prospect_id),
                 },
             ),
-            max_attempts=2,
+            max_attempts=1,
         )
         self._handle_tool_result(hubspot_results, snapshot.prospect.prospect_id, "hubspot_inbound_sync")
 
@@ -414,6 +565,17 @@ class Orchestrator:
             payload=confirmation,
         )
         self.repository.update_status(snapshot.prospect.prospect_id, "booked")
+        voice_result = self.handoff_manager.prepare_voice_handoff(
+            snapshot,
+            reason="calendar_booking_confirmed",
+            booking_status=confirmation["booking_status"],
+            force_allow=True,
+        )
+        self._handle_tool_result(
+            voice_result,
+            snapshot.prospect.prospect_id,
+            "voice_booking_handoff",
+        )
         hubspot_results = _with_retries(
             lambda: hubspot_client.record_conversation_event(
                 {
@@ -432,12 +594,17 @@ class Orchestrator:
                 snapshot.prospect.prospect_id,
                 activity_type="calendar_booking_confirmed",
                 activity_summary="Cal.com booking confirmation received and prospect marked as booked.",
-                metadata=confirmation,
+                metadata={
+                    **confirmation,
+                    "side_effects": [voice_result.model_dump(mode="json")],
+                    "channel_state": self.handoff_manager.current_state(snapshot.prospect.prospect_id),
+                },
             ),
             max_attempts=2,
         )
         self._handle_tool_result(hubspot_results, snapshot.prospect.prospect_id, "hubspot_booking_confirmed_sync")
-        trace_id = self.trace_logger.log(
+        trace_id = snapshot.trace_id or self.trace_logger.new_trace_id()
+        self.trace_logger.log(
             "calendar_booking_confirmed",
             {
                 "prospect_id": snapshot.prospect.prospect_id,
@@ -446,6 +613,7 @@ class Orchestrator:
                 "booking_status": confirmation["booking_status"],
                 "hubspot_results": [result.model_dump(mode="json") for result in hubspot_results],
             },
+            trace_id=trace_id,
         )
         return {
             "ok": True,
@@ -461,6 +629,7 @@ class Orchestrator:
         return self.repository.get_snapshot(prospect_id)
 
     def dashboard_state(self, limit: int = 6) -> DashboardStateResponse:
+        recent_snapshots = self.repository.list_recent_snapshots(limit=limit)
         traces = [
             RecentTrace(
                 trace_id=entry["trace_id"],
@@ -471,12 +640,52 @@ class Orchestrator:
             )
             for entry in self.trace_logger.recent(limit=limit)
         ]
+        latest_snapshot = recent_snapshots[0] if recent_snapshots else None
+        latest_events: list[DashboardInteractionEvent] = []
+        latest_artifacts: list[DashboardArtifact] = []
+        latest_flow: DashboardFlowSummary | None = None
+        if latest_snapshot is not None:
+            raw_events = self.repository.list_interaction_events(latest_snapshot.prospect.prospect_id)
+            latest_events = [
+                DashboardInteractionEvent(
+                    event_type=event["event_type"],
+                    channel=event["channel"],
+                    provider=event["provider"],
+                    created_at=event["created_at"],
+                    payload_summary=self._summarize_event_payload(event["payload"]),
+                )
+                for event in raw_events[-10:]
+            ]
+            latest_artifacts = self._artifacts_for_prospect(latest_snapshot.prospect.prospect_id)
+            latest_flow = DashboardFlowSummary(
+                prospect_id=latest_snapshot.prospect.prospect_id,
+                company_name=latest_snapshot.prospect.company_name,
+                status=latest_snapshot.prospect.status,
+                current_state=self.handoff_manager.current_state(latest_snapshot.prospect.prospect_id),
+                latest_event=raw_events[-1]["event_type"] if raw_events else None,
+                booking_status=(
+                    raw_events[-1]["payload"].get("booking_status")
+                    if raw_events and raw_events[-1]["event_type"] == "booking_confirmed"
+                    else (
+                        "confirmed"
+                        if any(event["event_type"] == "booking_confirmed" for event in raw_events)
+                        else "pending"
+                        if any(event["event_type"] == "booking_link_shared" for event in raw_events)
+                        else "not_started"
+                    )
+                ),
+                voice_handoff_ready=any(event["event_type"] == "voice_handoff_sent" for event in raw_events),
+                crm_logged=any(artifact.name == "hubspot" for artifact in latest_artifacts),
+            )
         return DashboardStateResponse(
             total_prospects=self.repository.count(),
             total_traces=self.trace_logger.count(),
             tool_statuses=self.tool_statuses(),
-            recent_snapshots=self.repository.list_recent_snapshots(limit=limit),
+            recent_snapshots=recent_snapshots,
             recent_traces=traces,
+            latest_flow=latest_flow,
+            latest_interaction_events=latest_events,
+            latest_artifacts=latest_artifacts,
         )
 
     def tool_statuses(self) -> list[ToolStatus]:
@@ -487,8 +696,10 @@ class Orchestrator:
             leadership_connector.status(),
             email_channel.status(),
             sms_channel.status(),
+            voice_channel.status(),
             hubspot_client.status(),
             calcom_client.status(),
+            generation_service.status(),
             langfuse_client.status(),
             tau2_adapter.status(),
         ]
@@ -500,6 +711,54 @@ class Orchestrator:
             body = "\n".join(lines[1:]).strip()
             return subject, body
         return "Tenacious research note", draft
+
+    def _summarize_event_payload(self, payload: dict) -> str | None:
+        if not payload:
+            return None
+        for key in ("subject", "message", "body", "result", "source_channel", "booking_status"):
+            value = payload.get(key)
+            if value:
+                text = str(value).strip()
+                return text if len(text) <= 180 else f"{text[:177]}..."
+        rendered = str(payload)
+        return rendered if len(rendered) <= 180 else f"{rendered[:177]}..."
+
+    def _artifact_preview(self, path: Path, *, max_chars: int = 220) -> str | None:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            return None
+        compact = " ".join(text.strip().split())
+        if not compact:
+            return None
+        return compact if len(compact) <= max_chars else f"{compact[: max_chars - 3]}..."
+
+    def _artifacts_for_prospect(self, prospect_id: str) -> list[DashboardArtifact]:
+        artifacts: list[DashboardArtifact] = []
+        suffix_map = {
+            "email": ("json", "application/json"),
+            "sms": ("json", "application/json"),
+            "voice": ("json", "application/json"),
+            "hubspot": ("json", "application/json"),
+            "langfuse": ("json", "application/json"),
+            "calcom": ("json", "application/json"),
+            "context_brief": ("md", "text/markdown"),
+        }
+        for name, (extension, content_type) in suffix_map.items():
+            path = settings.outbox_dir / f"{prospect_id}_{name}.{extension}"
+            if not path.exists():
+                continue
+            artifacts.append(
+                DashboardArtifact(
+                    name=name,
+                    path=str(path),
+                    exists=True,
+                    preview=self._artifact_preview(path),
+                    content_type=content_type,
+                    route=f"/artifacts/{prospect_id}/{name}",
+                )
+            )
+        return artifacts
 
 
 orchestrator = Orchestrator()

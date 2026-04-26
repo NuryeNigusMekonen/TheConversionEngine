@@ -5,11 +5,12 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from agent.api.dashboard import DASHBOARD_HTML
 from agent.channels.email import EmailWebhookError, email_channel
 from agent.channels.sms import SmsWebhookError, sms_channel
+from agent.channels.voice import VoiceWebhookError, voice_channel
 from agent.config import settings
 from agent.observability.tracing import TraceLogger
 from agent.orchestration.service import orchestrator
@@ -44,6 +45,7 @@ def deployment_info() -> dict[str, object]:
             "resend": f"{base}/webhooks/resend",
             "mailersend": f"{base}/webhooks/mailersend",
             "africastalking": f"{base}/webhooks/africastalking",
+            "voice": f"{base}/webhooks/voice",
             "calcom": f"{base}/webhooks/calcom",
             "hubspot": f"{base}/webhooks/hubspot",
         },
@@ -59,6 +61,26 @@ def dashboard_state() -> DashboardStateResponse:
 @router.get("/tools/status", response_model=list[ToolStatus])
 def tools_status() -> list[ToolStatus]:
     return orchestrator.tool_statuses()
+
+
+@router.get("/artifacts/{prospect_id}/{artifact_name}", response_class=PlainTextResponse)
+def artifact_detail(prospect_id: str, artifact_name: str) -> PlainTextResponse:
+    allowed = {
+        "email": ".json",
+        "sms": ".json",
+        "voice": ".json",
+        "hubspot": ".json",
+        "langfuse": ".json",
+        "calcom": ".json",
+        "context_brief": ".md",
+    }
+    extension = allowed.get(artifact_name)
+    if extension is None:
+        raise HTTPException(status_code=404, detail="Artifact type not found")
+    artifact_path = settings.outbox_dir / f"{prospect_id}_{artifact_name}{extension}"
+    if not artifact_path.exists():
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return PlainTextResponse(artifact_path.read_text(encoding="utf-8"))
 
 
 def _parse_request_body(raw_body: bytes, content_type: str) -> object:
@@ -194,6 +216,29 @@ async def africastalking_webhook(request: Request) -> dict[str, object]:
     return {
         "ok": True,
         "provider": "africastalking",
+        "trace_id": trace_id,
+        "artifact_ref": artifact_ref,
+        "decision": decision.model_dump(mode="json"),
+    }
+
+
+@router.post("/webhooks/voice")
+async def voice_webhook(request: Request) -> dict[str, object]:
+    raw_body = await request.body()
+    content_type = request.headers.get("content-type", "")
+    parsed_body = _parse_request_body(raw_body, content_type)
+    artifact_ref, trace_id = _store_webhook_artifact("voice", request, parsed_body, raw_body, content_type)
+    _verify_shared_secret(request, settings.voice_webhook_secret, "Voice")
+    try:
+        inbound = voice_channel.handle_shared_voice_webhook(
+            {"body": parsed_body, "headers": dict(request.headers.items())}
+        )
+        decision = orchestrator.handle_inbound_message(inbound)
+    except VoiceWebhookError as exc:
+        raise HTTPException(status_code=400, detail=f"Voice webhook parsing failed: {exc}") from exc
+    return {
+        "ok": True,
+        "provider": "voice",
         "trace_id": trace_id,
         "artifact_ref": artifact_ref,
         "decision": decision.model_dump(mode="json"),

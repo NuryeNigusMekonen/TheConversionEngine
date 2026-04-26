@@ -1,10 +1,14 @@
 from agent.channels.email import email_channel
 from agent.channels.sms import sms_channel
+from agent.channels.voice import voice_channel
+from agent.generation.service import generation_service
 from agent.schemas.briefs import ProspectEnrichmentResponse
 from agent.schemas.conversation import ConversationDecision
 from agent.schemas.prospect import InboundMessageRequest
 from agent.schemas.tools import ToolExecutionResult
 from agent.seed.loader import seed_materials
+from agent.scheduling.calcom import calcom_client
+from agent.scheduling.context_brief import context_brief_generator
 from agent.storage.repository import ProspectRepository
 
 # ---------------------------------------------------------------------------
@@ -21,6 +25,7 @@ from agent.storage.repository import ProspectRepository
 # ---------------------------------------------------------------------------
 
 _SMS_OPT_IN_TOKENS = ("sms", "text me", "whatsapp", "call me", "phone me")
+_VOICE_OPT_IN_TOKENS = ("voice", "phone call", "give me a call", "ring me", "call me", "phone me")
 _SCHEDULING_TOKENS = ("call", "calendar", "meet", "meeting", "schedule", "next week", "tomorrow", "book")
 
 # ---------------------------------------------------------------------------
@@ -46,6 +51,8 @@ class ChannelHandoffManager:
     def current_state(self, prospect_id: str) -> str:
         if self.repository.has_interaction_event(prospect_id, "booking_confirmed"):
             return "booked"
+        if self.repository.has_interaction_event(prospect_id, "voice_handoff_sent"):
+            return "voice_handoff_active"
         if self.repository.has_interaction_event(prospect_id, "sms_handoff_sent"):
             return "sms_handoff_active"
         if self.repository.has_interaction_event(prospect_id, "email_reply_received"):
@@ -82,7 +89,7 @@ class ChannelHandoffManager:
     # Reply builders (seed-grounded)
     # ------------------------------------------------------------------
 
-    def _pricing_reply(self, contact_name: str | None) -> str:
+    def _pricing_reply(self, contact_name: str | None) -> tuple[str, str]:
         """Build a pricing objection reply grounded in pricing_sheet.md.
 
         Quotes the engagement minimum and starter floor from the seed file.
@@ -93,6 +100,7 @@ class ChannelHandoffManager:
         p = seed_materials.pricing
         name = contact_name or "there"
         return (
+            "Tenacious pricing ranges",
             f"Hi {name},\n\n"
             f"{p.quotable_talent_floor}\n\n"
             f"For fixed-scope project work: {p.quotable_project_floor}\n\n"
@@ -103,7 +111,7 @@ class ChannelHandoffManager:
             "Best,\nTenacious research workflow\nTenacious Intelligence Corporation\ngettenacious.com"
         )
 
-    def _offshore_concern_reply(self, contact_name: str | None) -> str:
+    def _offshore_concern_reply(self, contact_name: str | None) -> tuple[str, str]:
         """Build an offshore-concern objection reply grounded in transcript_05.
 
         Uses agent-usable phrases from the objection-heavy discovery transcript.
@@ -113,6 +121,7 @@ class ChannelHandoffManager:
         op = seed_materials.objection_patterns
         name = contact_name or "there"
         return (
+            "Tenacious delivery model",
             f"Hi {name},\n\n"
             f"{op.offshore_concern}\n\n"
             "Named-engineer stability (not a rotating pool), direct technical access "
@@ -123,7 +132,7 @@ class ChannelHandoffManager:
             "Best,\nTenacious research workflow\nTenacious Intelligence Corporation\ngettenacious.com"
         )
 
-    def _general_followup_reply(self, snapshot: ProspectEnrichmentResponse) -> str:
+    def _general_followup_reply(self, snapshot: ProspectEnrichmentResponse) -> tuple[str, str]:
         """Build a follow-up reply grounded in discovery transcript patterns.
 
         Asks a clarifying question rather than asserting a conclusion.
@@ -142,6 +151,7 @@ class ChannelHandoffManager:
             )
 
         return (
+            "Tenacious research follow-up",
             f"Hi {name},\n\n"
             "Thanks for the context. The useful next step is to verify whether the "
             "public signal I found matches your actual constraint — recruiting velocity, "
@@ -150,7 +160,7 @@ class ChannelHandoffManager:
             "Best,\nTenacious research workflow\nTenacious Intelligence Corporation\ngettenacious.com"
         )
 
-    def _bench_mismatch_reply(self, snapshot: ProspectEnrichmentResponse) -> str:
+    def _bench_mismatch_reply(self, snapshot: ProspectEnrichmentResponse) -> tuple[str, str]:
         """Build a bench-mismatch reply. Does not over-promise capacity.
 
         Per bench_summary.json honesty constraint: 'If a prospect's stated need
@@ -176,12 +186,57 @@ class ChannelHandoffManager:
             )
 
         return (
+            "Tenacious capacity review",
             f"Hi {name},\n\n"
             f"{gap_note}\n\n"
             "I want to route this to a human review rather than committing to capacity "
             "the bench may not currently show. Expect a follow-up from the delivery lead.\n\n"
             "Best,\nTenacious research workflow\nTenacious Intelligence Corporation\ngettenacious.com"
         )
+
+    def _booking_reply(
+        self,
+        snapshot: ProspectEnrichmentResponse,
+        booking_link: str,
+    ) -> tuple[str, str]:
+        return (
+            f"Booking options for {snapshot.prospect.company_name}",
+            (
+                f"Hi {snapshot.prospect.contact_name or 'there'},\n\n"
+                "I set aside two discovery-call options for the delivery lead. "
+                f"You can confirm the best slot here: {booking_link}\n\n"
+                "If you prefer, reply with two windows and I will line it up manually.\n\n"
+                "Best,\nTenacious research workflow\nTenacious Intelligence Corporation\ngettenacious.com"
+            ),
+        )
+
+    def _rewrite_email_draft(
+        self,
+        *,
+        snapshot: ProspectEnrichmentResponse,
+        scenario: str,
+        fallback_subject: str,
+        fallback_body: str,
+        extra_context: dict[str, object],
+    ) -> str:
+        draft = generation_service.draft_email_from_scaffold(
+            trace_id=snapshot.trace_id,
+            prospect_id=snapshot.prospect.prospect_id,
+            scenario=scenario,
+            company_name=snapshot.prospect.company_name,
+            contact_name=snapshot.prospect.contact_name,
+            fallback_subject=fallback_subject,
+            fallback_body=fallback_body,
+            context={
+                "primary_segment": snapshot.prospect.primary_segment_label,
+                "ai_maturity_score": snapshot.prospect.ai_maturity_score,
+                "signals": [signal.summary for signal in snapshot.hiring_signal_brief.signals[:4]],
+                "safe_gap_framing": snapshot.competitor_gap_brief.safe_gap_framing,
+                "do_not_claim": snapshot.hiring_signal_brief.do_not_claim,
+                **extra_context,
+            },
+        )
+        return draft.as_reply_draft
 
     # ------------------------------------------------------------------
     # Warm SMS handoff
@@ -221,6 +276,46 @@ class ChannelHandoffManager:
             )
         return sms_result
 
+    def prepare_voice_handoff(
+        self,
+        snapshot: ProspectEnrichmentResponse,
+        *,
+        reason: str,
+        booking_link: str | None = None,
+        booking_status: str | None = None,
+        force_allow: bool = False,
+    ) -> ToolExecutionResult:
+        allow_warm_lead = force_allow or self.can_send_sms(snapshot.prospect.prospect_id)
+        events = self.repository.list_interaction_events(snapshot.prospect.prospect_id)
+        context_brief = context_brief_generator.build(
+            snapshot,
+            events=events,
+            reason=reason,
+            booking_link=booking_link,
+            booking_status=booking_status,
+        )
+        voice_result = voice_channel.prepare_handoff(
+            phone_number=snapshot.prospect.contact_phone,
+            prospect_id=snapshot.prospect.prospect_id,
+            company_name=snapshot.prospect.company_name,
+            contact_name=snapshot.prospect.contact_name,
+            contact_email=snapshot.prospect.contact_email,
+            allow_warm_lead=allow_warm_lead,
+            booking_link=booking_link,
+            context_brief=context_brief.markdown,
+            context_brief_artifact_ref=context_brief.artifact_ref,
+            reason=reason,
+        )
+        if voice_result.status in {"executed", "previewed"}:
+            self.repository.record_interaction_event(
+                snapshot.prospect.prospect_id,
+                "voice_handoff_sent",
+                channel="voice",
+                provider="shared_voice_rig" if voice_channel.status().configured else "mock",
+                payload={"message": voice_result.message, "reason": reason},
+            )
+        return voice_result
+
     # ------------------------------------------------------------------
     # Main routing
     # ------------------------------------------------------------------
@@ -247,23 +342,62 @@ class ChannelHandoffManager:
         # ---- Pricing objection (seed-grounded, no invented numbers) --
         elif any(token in body for token in _PRICING_TOKENS):
             risk_flags.append("pricing_guardrail")
-            reply = self._pricing_reply(snapshot.prospect.contact_name)
+            subject, fallback_body = self._pricing_reply(snapshot.prospect.contact_name)
+            reply = self._rewrite_email_draft(
+                snapshot=snapshot,
+                scenario="pricing_reply",
+                fallback_subject=subject,
+                fallback_body=fallback_body,
+                extra_context={
+                    "inbound_message": message.body,
+                    "pricing_guardrail": True,
+                },
+            )
 
         # ---- Offshore concern (transcript-grounded) -------------------
         elif any(token in body for token in _OFFSHORE_CONCERN_TOKENS):
             risk_flags.append("offshore_concern")
-            reply = self._offshore_concern_reply(snapshot.prospect.contact_name)
+            subject, fallback_body = self._offshore_concern_reply(snapshot.prospect.contact_name)
+            reply = self._rewrite_email_draft(
+                snapshot=snapshot,
+                scenario="offshore_reply",
+                fallback_subject=subject,
+                fallback_body=fallback_body,
+                extra_context={
+                    "inbound_message": message.body,
+                    "objection_pattern": "offshore_concern",
+                },
+            )
 
         # ---- Scheduling intent (book_meeting) ------------------------
         elif any(token in body for token in _SCHEDULING_TOKENS):
             next_action = "book_meeting"
             channel = "calendar"
-            email_result, reply = email_channel.send_booking_options(
-                recipient=snapshot.prospect.contact_email,
-                prospect_id=snapshot.prospect.prospect_id,
+            booking_link, _ = calcom_client.generate_booking_link(
                 company_name=snapshot.prospect.company_name,
-                contact_name=snapshot.prospect.contact_name,
                 contact_email=snapshot.prospect.contact_email,
+                prospect_id=snapshot.prospect.prospect_id,
+                source_channel="email",
+            )
+            subject, fallback_body = self._booking_reply(snapshot, booking_link)
+            reply = self._rewrite_email_draft(
+                snapshot=snapshot,
+                scenario="booking_options",
+                fallback_subject=subject,
+                fallback_body=fallback_body,
+                extra_context={
+                    "inbound_message": message.body,
+                    "booking_link": booking_link,
+                    "requested_voice": any(token in body for token in _VOICE_OPT_IN_TOKENS),
+                },
+            )
+            draft_subject = reply.splitlines()[0].split(":", 1)[1].strip() if reply.lower().startswith("subject:") else subject
+            draft_body = "\n".join(reply.splitlines()[1:]).strip() if reply.lower().startswith("subject:") else fallback_body
+            email_result = email_channel.send(
+                recipient=snapshot.prospect.contact_email,
+                subject=draft_subject,
+                body=draft_body,
+                prospect_id=snapshot.prospect.prospect_id,
             )
             side_effects.append(email_result)
             if email_result.status == "error":
@@ -286,16 +420,47 @@ class ChannelHandoffManager:
             else:
                 risk_flags.append(f"sms_skipped:{sms_reason}")
 
+            if any(token in body for token in _VOICE_OPT_IN_TOKENS):
+                voice_result = self.prepare_voice_handoff(
+                    snapshot,
+                    reason="prospect_requested_voice",
+                )
+                side_effects.append(voice_result)
+                if voice_result.status == "skipped":
+                    risk_flags.append("voice_warm_lead_gate_blocked")
+                elif voice_result.status == "error":
+                    risk_flags.append("voice_handoff_failed")
+
         # ---- Bench mismatch → human review (bench_summary.json gate) -
         elif not snapshot.hiring_signal_brief.bench_match.sufficient:
             next_action = "handoff_human"
             channel = "human"
             risk_flags.append("bench_mismatch_route_human")
-            reply = self._bench_mismatch_reply(snapshot)
+            subject, fallback_body = self._bench_mismatch_reply(snapshot)
+            reply = self._rewrite_email_draft(
+                snapshot=snapshot,
+                scenario="bench_mismatch_reply",
+                fallback_subject=subject,
+                fallback_body=fallback_body,
+                extra_context={
+                    "inbound_message": message.body,
+                    "bench_match": snapshot.hiring_signal_brief.bench_match.model_dump(mode="json"),
+                },
+            )
 
         # ---- General follow-up (case study if approved, else generic) -
         else:
-            reply = self._general_followup_reply(snapshot)
+            subject, fallback_body = self._general_followup_reply(snapshot)
+            reply = self._rewrite_email_draft(
+                snapshot=snapshot,
+                scenario="general_followup",
+                fallback_subject=subject,
+                fallback_body=fallback_body,
+                extra_context={
+                    "inbound_message": message.body,
+                    "current_state": self.current_state(snapshot.prospect.prospect_id),
+                },
+            )
 
         decision = ConversationDecision(
             next_action=next_action,
