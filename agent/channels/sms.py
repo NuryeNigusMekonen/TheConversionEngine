@@ -68,19 +68,23 @@ class SmsChannel:
             )
         if status.configured and phone_number:
             try:
+                is_sandbox = getattr(settings, "africas_talking_env", "production").lower() == "sandbox" or settings.africas_talking_username.lower() == "sandbox"
+                at_base = "https://api.sandbox.africastalking.com" if is_sandbox else "https://api.africastalking.com"
+                at_payload: dict = {
+                    "username": settings.africas_talking_username,
+                    "to": phone_number,
+                    "message": body,
+                }
+                if settings.africas_talking_sender_id:
+                    at_payload["from"] = settings.africas_talking_sender_id
                 _, response_text, _ = request_form(
                     "POST",
-                    "https://api.africastalking.com/version1/messaging",
+                    f"{at_base}/version1/messaging",
                     headers={
                         "apiKey": settings.africas_talking_api_key,
                         "Accept": "application/json",
                     },
-                    payload={
-                        "username": settings.africas_talking_username,
-                        "to": phone_number,
-                        "message": body,
-                        "from": settings.africas_talking_sender_id,
-                    },
+                    payload=at_payload,
                 )
                 return ToolExecutionResult(
                     name="sms",

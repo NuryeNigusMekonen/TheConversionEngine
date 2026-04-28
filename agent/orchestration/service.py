@@ -463,7 +463,7 @@ class Orchestrator:
         # can route to human review via the risk_flags list.
         # ------------------------------------------------------------------
         additional_risk_flags: list[str] = []
-        if raw_decision.next_action == "send_email" and raw_decision.reply_draft:
+        if raw_decision.next_action in {"send_email", "handoff_human"} and raw_decision.reply_draft:
             subject, reply_body = self._extract_email_payload(raw_decision.reply_draft)
             reply_subject = f"Re: {subject}" if not subject.lower().startswith("re:") else subject
             reply_email_result = email_channel.send(

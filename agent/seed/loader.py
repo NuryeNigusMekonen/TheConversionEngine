@@ -87,6 +87,47 @@ class EmailSequenceStructure:
     max_email3_words: int = 70
 
 
+@dataclass(frozen=True)
+class TranscriptPhrases:
+    """Agent-usable phrases extracted from a discovery transcript, keyed by segment."""
+    segment: str
+    usable: tuple[str, ...]
+
+@dataclass(frozen=True)
+class BaselineNumbers:
+    """Operational stats from seed/baseline_numbers.md — all publicly citable."""
+    tenure_months: int = 18
+    time_to_deploy_min_days: int = 7
+    time_to_deploy_max_days: int = 14
+    overlap_hours_min: int = 3
+    overlap_hours_max: int = 5
+    bench_ready: int = 60
+    bench_scalable: str = "hundreds"
+    women_pct: str = "33%"
+    african_pct: str = "100%"
+    yoy_growth: str = "520%"
+    current_clients: int = 9
+    deployed_engineers: int = 26
+    stalled_deal_rate: str = "30–40%"
+
+@dataclass(frozen=True)
+class ReengagementEmails:
+    """Re-engagement email structures from email_sequences/reengagement.md."""
+    email_1_subject: str
+    email_1_structure: str
+    email_2_subject: str
+    email_2_structure: str
+    email_3_subject: str
+    email_3_structure: str
+
+@dataclass(frozen=True)
+class SalesDeckConcernMap:
+    """Concern-to-phrase mappings from sales_deck_notes.md."""
+    indian_vendor_burned: str
+    accenture_slog: str
+    no_ai_expertise: str
+
+
 # ---------------------------------------------------------------------------
 # Parser helpers (private)
 # ---------------------------------------------------------------------------
@@ -303,6 +344,23 @@ def _build_email_sequence_structure() -> EmailSequenceStructure:
     )
 
 
+def _parse_transcript_phrases(text: str, segment: str) -> TranscriptPhrases:
+    """Extract agent-usable phrases from a discovery transcript."""
+    usable: list[str] = []
+    in_usable = False
+    for line in text.splitlines():
+        if "## Agent-usable phrases" in line:
+            in_usable = True
+            continue
+        if "## Agent-NOT-usable" in line or (line.startswith("## ") and in_usable):
+            in_usable = False
+        if in_usable and line.startswith("- "):
+            phrase = line.lstrip("- ").strip().strip('"')
+            if phrase:
+                usable.append(phrase)
+    return TranscriptPhrases(segment=segment, usable=tuple(usable))
+
+
 # ---------------------------------------------------------------------------
 # Top-level loader
 # ---------------------------------------------------------------------------
@@ -348,6 +406,49 @@ class SeedLoader:
         self.style: StyleConstraints = StyleConstraints()
         self.email_sequence: EmailSequenceStructure = _build_email_sequence_structure()
 
+        self.baseline: BaselineNumbers = BaselineNumbers()
+
+        self.transcript_phrases: dict[str, TranscriptPhrases] = self._load_all_transcript_phrases()
+
+        self.reengagement: ReengagementEmails = ReengagementEmails(
+            email_1_subject="One thing I noticed since we last spoke",
+            email_1_structure=(
+                "Re-open with a specific reference to the previous thread. "
+                "Introduce ONE new data point grounded in fresh enrichment — two sentences max. "
+                "Explain why it's relevant to the prospect's situation. "
+                "Soft ask only — no calendar link yet. Max 100 words."
+            ),
+            email_2_subject="One specific question",
+            email_2_structure=(
+                "Single-sentence opener. "
+                "ONE yes/no question the prospect can answer in one line. "
+                "No follow-up pitch. Max 50 words."
+            ),
+            email_3_subject="Parking this — check-in in 6 months",
+            email_3_structure=(
+                "One sentence acknowledging the thread is closed for now. "
+                "Name a specific re-engagement month. No apology. Max 40 words."
+            ),
+        )
+
+        self.sales_deck_concerns: SalesDeckConcernMap = SalesDeckConcernMap(
+            indian_vendor_burned=(
+                "We compete on reliability rather than hourly rate: average engineer tenure is "
+                "18 months, 3-hour minimum overlap with your time zone, and a dedicated project "
+                "manager on every engagement rather than self-service staffing."
+            ),
+            accenture_slog=(
+                "Our engineers are employees, not contractors — we commit to named-engineer "
+                "stability, no rotation, and direct access to the engineers doing the work "
+                "without a management translation layer."
+            ),
+            no_ai_expertise=(
+                "Tenacious engineers are AI-native by default — every engagement includes "
+                "engineers who work with ML, LLM, and data-platform tooling as standard practice, "
+                "not as a specialist add-on."
+            ),
+        )
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
@@ -367,6 +468,22 @@ class SeedLoader:
             stack_name: int(stack.get("available_engineers", 0))
             for stack_name, stack in bench.get("stacks", {}).items()
         }
+
+    def _load_all_transcript_phrases(self) -> dict[str, TranscriptPhrases]:
+        transcript_map = {
+            "transcript_01_series_b_startup.md": "recently_funded_startup",
+            "transcript_02_mid_market_restructure.md": "mid_market_restructuring",
+            "transcript_03_new_cto_transition.md": "engineering_leadership_transition",
+            "transcript_04_specialized_capability.md": "specialized_capability_gap",
+            "transcript_05_objection_heavy.md": "objection_heavy",
+        }
+        result: dict[str, TranscriptPhrases] = {}
+        for filename, segment in transcript_map.items():
+            path = settings.discovery_transcripts_dir / filename
+            text = self._read(path)
+            if text:
+                result[segment] = _parse_transcript_phrases(text, segment)
+        return result
 
     # ------------------------------------------------------------------
     # Public accessors
@@ -397,6 +514,20 @@ class SeedLoader:
         if segment in {"recently_funded_startup", "mid_market_restructuring"} and self.case_studies:
             return self.case_studies[0]
         return None
+
+    def get_transcript_phrases(self, segment: str) -> list[str]:
+        """Return agent-usable phrases for the given segment. Empty list if none."""
+        tp = self.transcript_phrases.get(segment)
+        return list(tp.usable) if tp else []
+
+    def get_reengagement_email(self, number: int) -> tuple[str, str]:
+        """Return (subject, structure) for re-engagement email number 1, 2, or 3."""
+        r = self.reengagement
+        if number == 1:
+            return r.email_1_subject, r.email_1_structure
+        if number == 2:
+            return r.email_2_subject, r.email_2_structure
+        return r.email_3_subject, r.email_3_structure
 
     def validate_email_style(
         self,

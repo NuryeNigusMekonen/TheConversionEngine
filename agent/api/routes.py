@@ -298,6 +298,54 @@ def handle_reply(payload: InboundMessageRequest) -> ConversationDecision:
     return orchestrator.handle_inbound_message(payload)
 
 
+@router.get("/prospects/seed-companies")
+def list_seed_companies() -> list[dict]:
+    import json
+    snapshot_files = {
+        "crunchbase": settings.crunchbase_snapshot_path,
+        "job_posts": settings.job_posts_snapshot_path,
+        "leadership": settings.leadership_snapshot_path,
+    }
+    cb = json.loads(settings.crunchbase_snapshot_path.read_text()) if settings.crunchbase_snapshot_path.exists() else []
+    lead = json.loads(settings.leadership_snapshot_path.read_text()) if settings.leadership_snapshot_path.exists() else []
+    contacts = {l.get("domain", ""): l for l in lead if l.get("domain")}
+    in_db = {p.company_domain: p for p in orchestrator.list_prospects() if p.company_domain}
+    result = []
+    for c in cb:
+        domain = c.get("domain", "")
+        lc = contacts.get(domain, {})
+        db_rec = in_db.get(domain)
+        result.append({
+            "company_name": c.get("company_name", ""),
+            "company_domain": domain,
+            "contact_name": lc.get("contact_name") or lc.get("name", ""),
+            "contact_email": lc.get("contact_email") or lc.get("email", ""),
+            "funding_musd": c.get("funding_musd"),
+            "employee_count": c.get("employee_count"),
+            "sector": c.get("sector", ""),
+            "in_pipeline": db_rec is not None,
+            "pipeline_status": db_rec.status if db_rec else None,
+            "prospect_id": db_rec.prospect_id if db_rec else None,
+        })
+    # Also include DB prospects whose domain isn't in snapshot
+    snapshot_domains = {c.get("domain", "") for c in cb}
+    for domain, p in in_db.items():
+        if domain not in snapshot_domains:
+            result.append({
+                "company_name": p.company_name,
+                "company_domain": domain,
+                "contact_name": p.contact_name or "",
+                "contact_email": p.contact_email or "",
+                "funding_musd": None,
+                "employee_count": None,
+                "sector": "",
+                "in_pipeline": True,
+                "pipeline_status": p.status,
+                "prospect_id": p.prospect_id,
+            })
+    return result
+
+
 @router.get("/prospects", response_model=list[ProspectRecord])
 def list_prospects() -> list[ProspectRecord]:
     return orchestrator.list_prospects()

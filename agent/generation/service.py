@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 _OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 _STANDARD_SIGNATURE = (
-    "Best,\n"
-    "Tenacious research workflow\n"
+    "Best regards,\n"
+    "The Tenacious Team\n"
     "Tenacious Intelligence Corporation\n"
     "gettenacious.com"
 )
@@ -250,16 +250,15 @@ class GenerationService:
         return cleaned
 
     def _signature_from_fallback(self, fallback_body: str) -> str:
-        if "\n\nBest," in fallback_body:
-            suffix = fallback_body.split("\n\nBest,", 1)[1].strip()
-            return f"Best,\n{suffix}" if suffix else _STANDARD_SIGNATURE
-        if "\nBest," in fallback_body:
-            suffix = fallback_body.split("\nBest,", 1)[1].strip()
-            return f"Best,\n{suffix}" if suffix else _STANDARD_SIGNATURE
+        for prefix in ("\n\nBest regards,", "\nBest regards,", "\n\nBest,", "\nBest,"):
+            if prefix in fallback_body:
+                keyword = prefix.lstrip("\n")
+                suffix = fallback_body.split(prefix, 1)[1].strip()
+                return f"{keyword}\n{suffix}" if suffix else _STANDARD_SIGNATURE
         return _STANDARD_SIGNATURE
 
     def _body_without_signature(self, body: str) -> str:
-        for marker in ("\n\nBest,", "\nBest,"):
+        for marker in ("\n\nBest regards,", "\nBest regards,", "\n\nBest,", "\nBest,"):
             if marker in body:
                 return body.split(marker, 1)[0].strip()
         return body.strip()
